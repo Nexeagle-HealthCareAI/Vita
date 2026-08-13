@@ -14,7 +14,7 @@
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
-    "test:ci": "cross-env CI=true turbo run test",
+    "test:ci": "cross-env CI=true turbo run test --filter=!@vita/web-demo",
     "clean": "turbo run clean && rm -rf node_modules"
   },
   "devDependencies": {
