@@ -75,6 +75,9 @@ importers:
 
   apps/orchestrator:
     dependencies:
+      '@vita/mcp-1hms':
+        specifier: workspace:*
+        version: link:../../packages/mcp-1hms
       '@vita/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol

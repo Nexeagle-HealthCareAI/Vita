@@ -3,6 +3,13 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { HmsClient } from './hmsClient.js';
 
+// Re-exported so callers that want to invoke 1HMS in-process (the orchestrator's
+// pipeline.ts, latency-sensitive on a live voice call) can import HmsClient directly
+// instead of going through a spawned stdio MCP transport. buildMcpServer below still
+// works unchanged as a real stdio MCP server for any other MCP client.
+export { HmsClient } from './hmsClient.js';
+export type { RegisterPatientInput, SlotAvailabilityInput, BookAppointmentInput } from './hmsClient.js';
+
 const hms = new HmsClient(
   process.env.HMS_API_BASE_URL ?? 'http://localhost:5000',
   process.env.HMS_API_KEY ?? '',

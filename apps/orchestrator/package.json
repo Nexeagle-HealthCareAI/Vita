@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@vita/protocol": "workspace:*",
+    "@vita/mcp-1hms": "workspace:*",
     "ioredis": "^5.4.1",
     "fastify": "^5.0.0"
   },

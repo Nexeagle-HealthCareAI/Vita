@@ -1,4 +1,5 @@
 import type { Redis } from 'ioredis';
+import type { ChatMessage } from './groq.js';
 
 export type TurnState = 'IDLE' | 'LISTENING' | 'PROCESSING' | 'SPEAKING';
 
@@ -8,6 +9,10 @@ export interface DialogueSession {
   role: 'ROLE_RECEPTIONIST' | 'ROLE_DOCTOR';
   turnState: TurnState;
   slots: Record<string, unknown>;
+  /** Conversation history sent to Groq on every turn -- without this the LLM has no
+   * memory of anything said earlier in the call. Grows per session; Phase 1 has no
+   * trimming/summarization, see docs/BUILD_GUIDE.md if this becomes a token-budget issue. */
+  history: ChatMessage[];
   resumeToken: string;
   updatedAt: number;
 }

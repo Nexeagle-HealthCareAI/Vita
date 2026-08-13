@@ -12,6 +12,7 @@ describe('SessionStore (backed by ioredis-mock)', () => {
       role: 'ROLE_RECEPTIONIST',
       turnState: 'IDLE',
       slots: {},
+      history: [],
       resumeToken: 'tok-1',
     });
 
@@ -35,6 +36,7 @@ describe('SessionStore (backed by ioredis-mock)', () => {
       role: 'ROLE_DOCTOR',
       turnState: 'IDLE',
       slots: {},
+      history: [],
       resumeToken: 'tok-2',
     });
 

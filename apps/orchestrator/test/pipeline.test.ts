@@ -1,0 +1,154 @@
+import { describe, expect, it, vi } from 'vitest';
+import { HmsClient } from '@vita/mcp-1hms';
+import { runTurn } from '../src/pipeline.js';
+import { GroqClient, type GroqChatResult } from '../src/groq.js';
+import { SarvamClient } from '../src/sarvam.js';
+import type { DialogueSession } from '../src/session.js';
+
+function mockGroq(responses: GroqChatResult[]) {
+  const groq = Object.create(GroqClient.prototype) as GroqClient;
+  const chat = vi.fn();
+  responses.forEach((r) => chat.mockResolvedValueOnce(r));
+  groq.chat = chat;
+  return groq;
+}
+
+function mockSarvam(audio = new Uint8Array([1, 2, 3])) {
+  const sarvam = Object.create(SarvamClient.prototype) as SarvamClient;
+  sarvam.synthesize = vi.fn().mockResolvedValue(audio);
+  return sarvam;
+}
+
+function mockHms() {
+  const hms = Object.create(HmsClient.prototype) as HmsClient;
+  hms.checkSlotAvailability = vi.fn().mockResolvedValue({ slots: [{ slotId: 's-1', time: '10:00', doctorId: 'd-1' }] });
+  hms.registerPatient = vi.fn();
+  hms.bookAppointment = vi.fn();
+  return hms;
+}
+
+function baseSession(overrides: Partial<DialogueSession> = {}): DialogueSession {
+  return {
+    sessionId: 'sess-1',
+    userId: 'user-1',
+    role: 'ROLE_RECEPTIONIST',
+    turnState: 'IDLE',
+    slots: {},
+    history: [],
+    resumeToken: 'tok-1',
+    updatedAt: Date.now(),
+    ...overrides,
+  };
+}
+
+describe('runTurn — scripted conversation (golden-fixture style, per docs/BUILD_GUIDE.md §3.5)', () => {
+  it('a transcript that needs a tool call: Groq requests the tool, gets the result, replies, then speaks it', async () => {
+    const groq = mockGroq([
+      {
+        content: null,
+        toolCalls: [{ id: 'call_1', name: 'check_slot_availability', arguments: { department: 'Cardiology', date: '2026-08-20' } }],
+      },
+      { content: 'There is a slot at 10:00 with Dr. Patel.', toolCalls: [] },
+    ]);
+    const sarvam = mockSarvam();
+    const hms = mockHms();
+    const auditSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const result = await runTurn({
+      session: baseSession(),
+      transcript: 'Any cardiology slots on the 20th?',
+      groq,
+      sarvam,
+      hms,
+    });
+
+    expect(result.toolCallsExecuted).toEqual(['check_slot_availability']);
+    expect(result.replyText).toBe('There is a slot at 10:00 with Dr. Patel.');
+    expect(Array.from(result.audio)).toEqual([1, 2, 3]);
+    expect(hms.checkSlotAvailability).toHaveBeenCalledWith({ department: 'Cardiology', date: '2026-08-20' });
+    expect(sarvam.synthesize).toHaveBeenCalledWith('There is a slot at 10:00 with Dr. Patel.');
+
+    // Audit trail: one AUDIT line for the successful tool call.
+    const auditLines = auditSpy.mock.calls.map((c) => JSON.parse(c[0] as string));
+    expect(auditLines).toContainEqual(
+      expect.objectContaining({ type: 'AUDIT', action: 'tool_call:check_slot_availability', outcome: 'success' }),
+    );
+    auditSpy.mockRestore();
+
+    // History grows: system + user + assistant(tool-request) + tool result + final assistant.
+    expect(result.updatedHistory.at(-1)).toEqual({ role: 'assistant', content: 'There is a slot at 10:00 with Dr. Patel.' });
+  });
+
+  it('a transcript needing no tool at all replies directly, still gets spoken', async () => {
+    const groq = mockGroq([{ content: 'Sure, how can I help?', toolCalls: [] }]);
+    const sarvam = mockSarvam();
+    const hms = mockHms();
+
+    const result = await runTurn({ session: baseSession(), transcript: 'hello', groq, sarvam, hms });
+
+    expect(result.toolCallsExecuted).toEqual([]);
+    expect(result.replyText).toBe('Sure, how can I help?');
+  });
+
+  it('a doctor calling a receptionist-only tool gets an RBAC denial, audited and surfaced to the model -- not a crash', async () => {
+    const groq = mockGroq([
+      { content: null, toolCalls: [{ id: 'call_1', name: 'register_patient', arguments: { name: 'x', phone: 'y', department: 'z' } }] },
+      { content: "I'm not able to do that as a doctor -- front desk can register the patient.", toolCalls: [] },
+    ]);
+    const sarvam = mockSarvam();
+    const hms = mockHms();
+    const auditSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const result = await runTurn({
+      session: baseSession({ role: 'ROLE_DOCTOR' }),
+      transcript: 'Register a new patient named x',
+      groq,
+      sarvam,
+      hms,
+    });
+
+    expect(result.toolCallsExecuted).toEqual([]); // denied, not executed
+    expect(hms.registerPatient).not.toHaveBeenCalled();
+    const auditLines = auditSpy.mock.calls.map((c) => JSON.parse(c[0] as string));
+    expect(auditLines).toContainEqual(
+      expect.objectContaining({ type: 'AUDIT', action: 'tool_call:register_patient', outcome: 'denied' }),
+    );
+    auditSpy.mockRestore();
+    expect(result.replyText).toContain("not able to do that");
+  });
+
+  it('selects GROQ_MODEL_DOCTOR for a doctor session and GROQ_MODEL_ADMIN for a receptionist session', async () => {
+    process.env.GROQ_MODEL_DOCTOR = 'test-doctor-model';
+    process.env.GROQ_MODEL_ADMIN = 'test-admin-model';
+
+    const groq = mockGroq([{ content: 'ok', toolCalls: [] }]);
+    await runTurn({ session: baseSession({ role: 'ROLE_DOCTOR' }), transcript: 'hi', groq, sarvam: mockSarvam(), hms: mockHms() });
+    expect((groq.chat as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe('test-doctor-model');
+
+    const groq2 = mockGroq([{ content: 'ok', toolCalls: [] }]);
+    await runTurn({ session: baseSession({ role: 'ROLE_RECEPTIONIST' }), transcript: 'hi', groq: groq2, sarvam: mockSarvam(), hms: mockHms() });
+    expect((groq2.chat as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe('test-admin-model');
+
+    delete process.env.GROQ_MODEL_DOCTOR;
+    delete process.env.GROQ_MODEL_ADMIN;
+  });
+});
+
+describe('runTurn — round cap (a live call must never hang)', () => {
+  it('stops after MAX_TOOL_ROUNDS and returns a safe fallback reply instead of looping forever', async () => {
+    // Groq keeps requesting the same tool call every round, never producing a final answer.
+    const alwaysToolCall: GroqChatResult = {
+      content: null,
+      toolCalls: [{ id: 'call_x', name: 'check_slot_availability', arguments: { department: 'Cardiology', date: '2026-08-20' } }],
+    };
+    const groq = mockGroq([alwaysToolCall, alwaysToolCall, alwaysToolCall, alwaysToolCall, alwaysToolCall]);
+    const sarvam = mockSarvam();
+    const hms = mockHms();
+
+    const result = await runTurn({ session: baseSession(), transcript: 'loop forever please', groq, sarvam, hms });
+
+    expect(result.replyText).toMatch(/trouble completing|repeat/i);
+    // Exactly 3 rounds of groq.chat -- the cap, not unbounded.
+    expect((groq.chat as ReturnType<typeof vi.fn>).mock.calls.length).toBe(3);
+  });
+});

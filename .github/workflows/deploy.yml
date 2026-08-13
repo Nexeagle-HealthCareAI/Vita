@@ -74,8 +74,30 @@ jobs:
           host: ${{ secrets.E2E_VM_HOST }}
           username: ${{ secrets.E2E_VM_USER }}
           key: ${{ secrets.E2E_VM_SSH_KEY }}
+          # .env is regenerated from GitHub secrets on every deploy, not hand-maintained
+          # on the VM (docs/BUILD_GUIDE.md §4.4 previously said to copy it there
+          # manually -- that step never actually existed in this workflow, so gateway/
+          # orchestrator's `env_file: .env` in docker-compose.prod.yml had nothing to
+          # read until now). In-cluster URLs (redis/qdrant/orchestrator/audio-preprocess)
+          # use Compose's service-name DNS, not secrets -- only genuinely secret values
+          # come from `secrets.*`.
           script: |
             cd ~/tera-deploy
+            cat > .env <<EOF
+            JWT_SIGNING_SECRET=${{ secrets.JWT_SIGNING_SECRET }}
+            SARVAM_API_KEY=${{ secrets.SARVAM_API_KEY }}
+            SARVAM_STT_ENDPOINT=https://api.sarvam.ai/speech-to-text-streaming
+            SARVAM_TTS_ENDPOINT=https://api.sarvam.ai/text-to-speech
+            GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
+            GROQ_MODEL_ADMIN=llama-3.1-8b-instant
+            GROQ_MODEL_DOCTOR=llama-3.1-70b-versatile
+            HMS_API_BASE_URL=${{ secrets.HMS_API_BASE_URL }}
+            HMS_API_KEY=${{ secrets.HMS_API_KEY }}
+            REDIS_URL=redis://redis:6379
+            QDRANT_URL=http://qdrant:6333
+            ORCHESTRATOR_INTERNAL_URL=ws://orchestrator:8081
+            AUDIO_PREPROCESS_URL=http://audio-preprocess:8090
+            EOF
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             docker compose -f docker-compose.prod.yml pull
             docker compose -f docker-compose.prod.yml up -d --remove-orphans
