@@ -1,10 +1,28 @@
 import Fastify from 'fastify';
 import websocketPlugin from '@fastify/websocket';
+import { BinaryFrameType, decodeBinaryFrame } from '@vita/protocol';
 import { redeemTicket, verifyJwtAndIssueTicket } from './ticket.js';
+import { AudioPreprocessClient } from './audioPreprocessClient.js';
+import { OrchestratorClient } from './orchestratorClient.js';
+import { ConnectionRelay, type RelayConfig } from './relay.js';
 
 const JWT_SECRET = process.env.JWT_SIGNING_SECRET ?? 'change-me';
 const PORT = Number(process.env.GATEWAY_PORT ?? 8080);
 const TICKET_PROTOCOL_PREFIXES = ['vita-ticket.', 'tera-ticket.'] as const;
+
+// Read fresh per buildServer() call (not at module top-level) so tests can override via
+// process.env before constructing the server, same as AUDIO_PREPROCESS_URL/
+// ORCHESTRATOR_INTERNAL_URL below. All optional -- an unset var leaves ConnectionRelay's
+// own default for that field untouched.
+function relayConfigFromEnv(): Partial<RelayConfig> {
+  const config: Partial<RelayConfig> = {};
+  if (process.env.UTTERANCE_SILENCE_MS) config.silenceHangoverMs = Number(process.env.UTTERANCE_SILENCE_MS);
+  if (process.env.MIN_UTTERANCE_SPEECH_MS) config.minUtteranceSpeechMs = Number(process.env.MIN_UTTERANCE_SPEECH_MS);
+  if (process.env.MAX_UTTERANCE_MS) config.maxUtteranceMs = Number(process.env.MAX_UTTERANCE_MS);
+  if (process.env.BARGE_IN_ENABLED) config.bargeInEnabled = process.env.BARGE_IN_ENABLED !== 'false';
+  if (process.env.BARGE_IN_GRACE_MS) config.bargeInGraceMs = Number(process.env.BARGE_IN_GRACE_MS);
+  return config;
+}
 
 export function extractTicketProtocol(protocols: string[]): string | undefined {
   const ticketProtocol = protocols.find((protocol) =>
@@ -16,7 +34,13 @@ export function extractTicketProtocol(protocols: string[]): string | undefined {
   return prefix ? ticketProtocol.slice(prefix.length) : undefined;
 }
 
-export function buildServer() {
+export function buildServer(deps?: { audioPreprocess?: AudioPreprocessClient; orchestrator?: OrchestratorClient }) {
+  const audioPreprocess =
+    deps?.audioPreprocess ?? new AudioPreprocessClient(process.env.AUDIO_PREPROCESS_URL ?? 'http://localhost:8090');
+  const orchestrator =
+    deps?.orchestrator ?? new OrchestratorClient(process.env.ORCHESTRATOR_INTERNAL_URL ?? 'http://localhost:8081');
+  const relayConfig = relayConfigFromEnv();
+
   const app = Fastify({ logger: true });
   app.register(websocketPlugin);
 
@@ -54,20 +78,47 @@ export function buildServer() {
 
       req.log.info({ sub: claims.sub, role: claims.role }, 'session established');
 
-      // TODO(orchestrator relay): open an internal WS/gRPC stream to
-      // ORCHESTRATOR_INTERNAL_URL, tag it with claims.sub/claims.role, and
-      // pipe binary frames + control JSON both ways. Stubbed here so the
-      // gateway is independently testable; see docs/BUILD_GUIDE.md §5.4.
+      // apps/gateway/src/relay.ts owns VAD-based utterance segmentation and the
+      // LISTENING/PROCESSING/SPEAKING lifecycle for this connection; it calls out to
+      // audio-preprocess (per frame) and the orchestrator (once per utterance) over
+      // plain HTTP rather than a second WS -- see the relay plan for why.
+      const relay = new ConnectionRelay(
+        {
+          audioPreprocess,
+          orchestrator,
+          claims,
+          send: (data) => socket.send(data),
+          log: req.log,
+        },
+        relayConfig,
+      );
+
+      void relay.start().then((ok) => {
+        if (!ok) {
+          req.log.warn({ sub: claims.sub }, 'orchestrator session bootstrap failed');
+          socket.close(4002, 'orchestrator unavailable');
+        }
+      });
+
       socket.on('message', (data: Buffer, isBinary: boolean) => {
         if (isBinary) {
-          // relay raw PCM16 frame to orchestrator (not yet wired in this stub)
-          req.log.debug({ bytes: data.byteLength }, 'audio frame received');
+          // web-sdk prefixes every mic frame with the protocol's 1-byte AUDIO_INPUT_PCM16
+          // type marker (encodeBinaryFrame) -- strip it before treating the rest as raw
+          // PCM16, otherwise every buffered frame carries a spurious leading byte that
+          // shifts 16-bit sample alignment for everything after it.
+          const { type, payload } = decodeBinaryFrame(new Uint8Array(data));
+          if (type === BinaryFrameType.AUDIO_INPUT_PCM16) {
+            relay.handleAudioFrame(payload);
+          } else {
+            req.log.debug({ type }, 'ignoring unexpected binary frame type');
+          }
         } else {
-          req.log.debug({ msg: data.toString() }, 'control event received');
+          relay.handleControlEvent(data.toString());
         }
       });
 
       socket.on('close', () => {
+        relay.close();
         req.log.info({ sub: claims.sub }, 'session closed');
       });
     });

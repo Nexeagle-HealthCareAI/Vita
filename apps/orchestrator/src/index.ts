@@ -28,7 +28,16 @@ export function buildServer(
   const hms =
     clients?.hms ??
     new HmsClient(process.env.HMS_API_BASE_URL ?? 'http://localhost:5000', process.env.HMS_API_KEY ?? '');
-  const app = Fastify({ logger: true });
+  // bodyLimit default (1MB) comfortably covers a raw-audio turn (worst case ~625KB at the
+  // gateway relay's 20s max-utterance cap) but is bumped for headroom -- see /turn/audio below.
+  const app = Fastify({ logger: true, bodyLimit: 2 * 1024 * 1024 });
+
+  // The gateway relay posts one utterance's raw PCM16 audio per turn (see
+  // /session/:id/turn/audio below) -- Fastify has no default parser for this content type
+  // and throws FST_ERR_CTP_INVALID_MEDIA_TYPE without one registered.
+  app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer' }, (_req, payload, done) => {
+    done(null, payload);
+  });
 
   app.get('/healthz', async () => ({ status: 'ok' }));
 
@@ -119,7 +128,80 @@ export function buildServer(
     });
   });
 
+  // The gateway relay's audio-input counterpart to /session/:id/turn above -- it segments a
+  // caller's speech into utterances itself (apps/gateway/src/relay.ts) and posts the raw PCM16
+  // bytes here instead of an already-transcribed string. This route just adds an STT step in
+  // front of the exact same runTurn used by the text-transcript route.
+  app.post('/session/:id/turn/audio', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const session = await sessions.get(id);
+    if (!session) {
+      return reply.code(404).send({ error: { code: 'SESSION_NOT_FOUND', message: 'session not found', recoverable: false } });
+    }
+
+    const audio = new Uint8Array(req.body as Buffer);
+
+    let transcript: string;
+    try {
+      transcript = (await sarvam.transcribe(audio)).text;
+    } catch (err) {
+      recordAuditEvent({
+        ts: Date.now(),
+        sessionId: id,
+        userId: session.userId,
+        role: session.role,
+        action: 'stt',
+        outcome: 'error',
+      });
+      return reply.code(502).send({ error: { code: 'STT_FAILED', message: errMessage(err), recoverable: true } });
+    }
+
+    if (!transcript.trim()) {
+      // Soft no-op, not an error: the gateway's VAD armed an utterance but Sarvam heard no
+      // words (cough/breath/noise). Mirrors /session/:id/turn's empty-transcript rejection in
+      // spirit, but this is an expected/normal outcome here, not a client mistake -- don't
+      // waste a Groq round trip on it.
+      recordAuditEvent({
+        ts: Date.now(),
+        sessionId: id,
+        userId: session.userId,
+        role: session.role,
+        action: 'stt_empty',
+        outcome: 'success',
+      });
+      return reply.send({ transcript: '', replyText: null, audioBase64: null, toolCallsExecuted: [] });
+    }
+
+    let result;
+    try {
+      result = await runTurn({ session, transcript, groq, sarvam, hms });
+    } catch (err) {
+      recordAuditEvent({
+        ts: Date.now(),
+        sessionId: id,
+        userId: session.userId,
+        role: session.role,
+        action: 'turn',
+        outcome: 'error',
+      });
+      return reply.code(502).send({ error: { code: 'TURN_FAILED', message: errMessage(err), recoverable: true } });
+    }
+
+    await sessions.update(id, { history: result.updatedHistory, turnState: 'IDLE' });
+
+    return reply.send({
+      transcript,
+      replyText: result.replyText,
+      audioBase64: Buffer.from(result.audio).toString('base64'),
+      toolCallsExecuted: result.toolCallsExecuted,
+    });
+  });
+
   return app;
+}
+
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 if (process.env.NODE_ENV !== 'test') {

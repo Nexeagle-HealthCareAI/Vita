@@ -135,7 +135,7 @@ jobs:
             HMS_API_KEY=${{ secrets.HMS_API_KEY }}
             REDIS_URL=redis://redis:6379
             QDRANT_URL=http://qdrant:6333
-            ORCHESTRATOR_INTERNAL_URL=ws://orchestrator:8081
+            ORCHESTRATOR_INTERNAL_URL=http://orchestrator:8081
             AUDIO_PREPROCESS_URL=http://audio-preprocess:8090
             EOF
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
@@ -216,7 +216,7 @@ jobs:
             HMS_API_KEY=${{ secrets.HMS_API_KEY }}
             REDIS_URL=redis://redis:6379
             QDRANT_URL=http://qdrant:6333
-            ORCHESTRATOR_INTERNAL_URL=ws://orchestrator:8081
+            ORCHESTRATOR_INTERNAL_URL=http://orchestrator:8081
             AUDIO_PREPROCESS_URL=http://audio-preprocess:8090
             EOF
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
