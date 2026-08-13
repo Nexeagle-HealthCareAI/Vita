@@ -1,6 +1,8 @@
 fastapi==0.115.0
 uvicorn[standard]==0.31.0
-numpy==2.1.2
+# deepfilternet 0.5.6 requires numpy<2.0 -- pinned here (not 2.x) so pip's resolver
+# doesn't hit ResolutionImpossible against it. torch==2.4.1 is fine with 1.26.x too.
+numpy==1.26.4
 torch==2.4.1
 # deepfilternet and silero-vad pull in torch/onnxruntime; pinned separately
 # so CI can cache the heavy layer independently of the app code layer.
