@@ -1,4 +1,4 @@
-# @tera/web-sdk
+# @vita/web-sdk
 
 Browser client SDK for Tera. Fixes applied vs. the original Phase 1 draft:
 
@@ -19,10 +19,10 @@ Browser client SDK for Tera. Fixes applied vs. the original Phase 1 draft:
 ## Usage
 
 ```ts
-import { TeraWebSDK } from '@tera/web-sdk';
+import { VitaWebSDK } from '@vita/web-sdk';
 
-const sdk = new TeraWebSDK({
-  gatewayOrigin: 'https://gateway.tera.hospital',
+const sdk = new VitaWebSDK({
+  gatewayOrigin: 'https://gateway.vita.hospital',
   authToken: userJwt,
   userRole: 'ROLE_RECEPTIONIST',
   onTranscript: (text, isFinal) => setTranscript(text),
@@ -38,7 +38,7 @@ sdk.stopSession();
 
 ## Testing
 
-`pnpm --filter @tera/web-sdk test` — unit tests mock `AudioContext`,
+`pnpm --filter @vita/web-sdk test` — unit tests mock `AudioContext`,
 `WebSocket`, and `fetch`; see `test/`. Browser-level integration testing
 (real `AudioWorklet`, real mic) is covered separately in
 `apps/web-demo` via Playwright — see `docs/BUILD_GUIDE.md` §4.2.

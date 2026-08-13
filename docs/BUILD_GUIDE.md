@@ -1,4 +1,4 @@
-# Tera — Build Guide (Phase 1)
+# Vita — Build Guide (Phase 1)
 
 This is the step-by-step path from an empty GitHub repo to a running Phase 1
 stack on E2E Networks. It assumes `docs/ARCHITECTURE.md` (the revised v1.1
@@ -256,12 +256,12 @@ private half into the `E2E_VM_SSH_KEY` GitHub secret from §1.
 ### 4.3 TLS
 
 ```bash
-certbot certonly --standalone -d gateway.tera.hospital
-cp /etc/letsencrypt/live/gateway.tera.hospital/fullchain.pem infra/nginx/certs/
-cp /etc/letsencrypt/live/gateway.tera.hospital/privkey.pem infra/nginx/certs/
+certbot certonly --standalone -d gateway.vita.hospital
+cp /etc/letsencrypt/live/gateway.vita.hospital/fullchain.pem infra/nginx/certs/
+cp /etc/letsencrypt/live/gateway.vita.hospital/privkey.pem infra/nginx/certs/
 ```
 
-Point your DNS `A` record for `gateway.tera.hospital` at the VM's IP before
+Point your DNS `A` record for `gateway.vita.hospital` at the VM's IP before
 running certbot. Set up a renewal cron (`certbot renew` twice-daily,
 standard practice) — Let's Encrypt certs expire in 90 days.
 
@@ -282,7 +282,7 @@ build+push images to `ghcr.io`, then SSH into the VM, pull, and
 ### 4.5 Smoke test
 
 ```bash
-curl https://gateway.tera.hospital/healthz
+curl https://gateway.vita.hospital/healthz
 # {"status":"ok"}
 ```
 
@@ -322,13 +322,13 @@ place of the Nginx/certbot setup in §4.3. Not required for Phase 1 launch.
 
 | Component | Status |
 |---|---|
-| `@tera/protocol` | done, tested |
-| `@tera/web-sdk` | done, tested (transport/audio/playback layer) |
+| `@vita/protocol` | done, tested |
+| `@vita/web-sdk` | done, tested (transport/audio/playback layer) |
 | `apps/gateway` | ticket auth done, tested; orchestrator relay is a TODO |
 | `apps/orchestrator` | session/RBAC/audit done, tested; STT/LLM/TTS pipeline is a TODO |
 | `apps/audio-preprocess` | service scaffold done, tested; real model weights are a TODO |
-| `@tera/mcp-1hms` | done, tested against mocked 1HMS API |
-| `@tera/rag` | BM25 + fusion done, tested; embeddings + ingestion are a TODO |
+| `@vita/mcp-1hms` | done, tested against mocked 1HMS API |
+| `@vita/rag` | BM25 + fusion done, tested; embeddings + ingestion are a TODO |
 | `apps/web-demo` | done, tested (UI layer) |
 | CI (`ci.yml`) | done — lint/typecheck/build/test on every PR |
 | CD (`deploy.yml`) | done — builds images, deploys to E2E VM on `main` |

@@ -1,4 +1,4 @@
-# Tera — Architecture v1.1 (Phase 1, revised)
+# Vita — Architecture v1.1 (Phase 1, revised)
 
 This supersedes the original Phase 1 diagram. Same layering, with the fixes from
 the architecture review baked in as first-class components instead of left implicit.
@@ -10,12 +10,12 @@ Changes from v1.0 are marked **[NEW]** / **[CHANGED]**.
 +--------------------------------------------------------------------------------+
 |                         WEB APPLICATION CLIENT LAYER                           |
 |  +----------------------------------------------------------------------------+|
-|  |                        WEB SDK (@tera/web-sdk)                             ||
+|  |                        WEB SDK (@vita/web-sdk)                             ||
 |  |  - Audio Capture: AudioWorkletNode (16kHz 16-bit PCM Mono)                 ||
 |  |  - AEC: browser-native (getUserMedia echoCancellation) — SINGLE AEC [CHANGED]||
 |  |  - Client VAD: Silero VAD — advisory only, drives barge-in UX [CHANGED]    ||
 |  |  - Playback: scheduled jitter-buffer queue (AudioBufferSourceNode chain)   ||
-|  |  - Protocol: binary WS frames + typed events from @tera/protocol [NEW]     ||
+|  |  - Protocol: binary WS frames + typed events from @vita/protocol [NEW]     ||
 |  |  - Session: ticket-based auth, auto-reconnect w/ backoff [NEW]             ||
 |  +----------------------------------------------------------------------------+|
 +--------------------------------------------------------------------------------+
@@ -67,7 +67,7 @@ Changes from v1.0 are marked **[NEW]** / **[CHANGED]**.
 +--------------------------------------------------------------------------------+
               |  (chunked binary audio frames)
               v
-[ Browser playback via @tera/web-sdk jitter buffer ]
+[ Browser playback via @vita/web-sdk jitter buffer ]
 ```
 
 ## 2. What changed vs. v1.0, and why
@@ -76,7 +76,7 @@ Changes from v1.0 are marked **[NEW]** / **[CHANGED]**.
 |---|--------|--------|
 | 1 | Auth: HTTPS ticket exchange before WS upgrade, not JWT in the WS query string | Query strings land in access/proxy logs |
 | 2 | Role is derived server-side from JWT claims only | Client-supplied `role` param is a privilege-escalation vector |
-| 3 | `@tera/protocol` shared, versioned event contract | Prevents client/server drift, required before Phase 2 mobile SDK can truly be "zero backend changes" |
+| 3 | `@vita/protocol` shared, versioned event contract | Prevents client/server drift, required before Phase 2 mobile SDK can truly be "zero backend changes" |
 | 4 | Binary WS frames for audio instead of JSON+base64 | ~33% bandwidth/CPU overhead removed |
 | 5 | Single AEC (browser-native) for Phase 1 | Two AEC engines in series fight each other; revisit custom WASM AEC only if native quality proves insufficient in real clinic noise tests |
 | 6 | Client VAD explicitly advisory-only; server VAD authoritative | Removes ambiguity, keeps a single source of truth for turn-taking |
@@ -88,13 +88,13 @@ Changes from v1.0 are marked **[NEW]** / **[CHANGED]**.
 ## 3. Module boundaries (maps to repo layout)
 
 - `packages/protocol` — shared TS types + zod schemas for every WS event, versioned.
-- `packages/web-sdk` — `@tera/web-sdk`, the browser client.
+- `packages/web-sdk` — `@vita/web-sdk`, the browser client.
 - `apps/gateway` — Node/Fastify WS ingress: ticket issuance/verification, binary frame relay, sticky routing.
 - `apps/audio-preprocess` — Python service: DeepFilterNet + Silero VAD, gRPC/WS internal API.
 - `apps/orchestrator` — Node/TS: Redis session state machine, RBAC, audit log, Groq/Sarvam/MCP/RAG orchestration.
 - `packages/mcp-1hms` — MCP server wrapping 1HMS APIs (`register_patient`, `check_slot_availability`, `book_appointment`).
 - `packages/rag` — ingestion + hybrid retrieval over Qdrant.
-- `apps/web-demo` — reference React app (`ReceptionistDashboard`) consuming `@tera/web-sdk`.
+- `apps/web-demo` — reference React app (`ReceptionistDashboard`) consuming `@vita/web-sdk`.
 
 ## 4. Deployment target
 

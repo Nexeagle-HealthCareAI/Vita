@@ -30,7 +30,9 @@ jobs:
           context: .
           file: apps/gateway/Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/tera-gateway:latest
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/vita-gateway:latest
+            ghcr.io/${{ github.repository_owner }}/tera-gateway:latest
 
       - name: Build & push orchestrator
         uses: docker/build-push-action@v6
@@ -38,14 +40,18 @@ jobs:
           context: .
           file: apps/orchestrator/Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/tera-orchestrator:latest
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/vita-orchestrator:latest
+            ghcr.io/${{ github.repository_owner }}/tera-orchestrator:latest
 
       - name: Build & push audio-preprocess
         uses: docker/build-push-action@v6
         with:
           context: apps/audio-preprocess
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/tera-audio-preprocess:latest
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/vita-audio-preprocess:latest
+            ghcr.io/${{ github.repository_owner }}/tera-audio-preprocess:latest
 
   deploy:
     runs-on: ubuntu-latest
@@ -59,7 +65,7 @@ jobs:
           host: ${{ secrets.E2E_VM_HOST }}
           username: ${{ secrets.E2E_VM_USER }}
           key: ${{ secrets.E2E_VM_SSH_KEY }}
-          source: "docker-compose.prod.yml,infra/nginx/tera.conf"
+          source: "docker-compose.prod.yml,infra/nginx/vita.conf"
           target: "~/tera-deploy"
 
       - name: Pull new images and restart the stack

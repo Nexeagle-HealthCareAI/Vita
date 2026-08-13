@@ -8,7 +8,7 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./infra/nginx/tera.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./infra/nginx/vita.conf:/etc/nginx/conf.d/default.conf:ro
       - ./infra/nginx/certs:/etc/nginx/certs:ro
     depends_on:
       - gateway
@@ -27,7 +27,7 @@ services:
     restart: unless-stopped
 
   gateway:
-    image: ghcr.io/nexeagle/tera-gateway:latest
+    image: ghcr.io/nexeagle/vita-gateway:latest
     env_file: .env
     depends_on:
       - orchestrator
@@ -37,14 +37,14 @@ services:
         condition: on-failure
 
   orchestrator:
-    image: ghcr.io/nexeagle/tera-orchestrator:latest
+    image: ghcr.io/nexeagle/vita-orchestrator:latest
     env_file: .env
     depends_on:
       - redis
     restart: unless-stopped
 
   audio-preprocess:
-    image: ghcr.io/nexeagle/tera-audio-preprocess:latest
+    image: ghcr.io/nexeagle/vita-audio-preprocess:latest
     restart: unless-stopped
 
 volumes:

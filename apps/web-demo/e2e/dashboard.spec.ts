@@ -1,9 +1,9 @@
 import { expect, test } from '@playwright/test';
 
-test('renders the registration form and talk button', async ({ page }) => {
+test('renders the registration form and Vita talk button', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByPlaceholder('Patient Name')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Talk to Tera' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Talk to Vita' })).toBeVisible();
 });
 
 test('typing into the form fields works independently of the voice session', async ({ page }) => {

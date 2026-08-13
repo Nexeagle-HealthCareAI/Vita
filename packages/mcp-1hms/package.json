@@ -1,5 +1,5 @@
 {
-  "name": "@tera/mcp-1hms",
+  "name": "@vita/mcp-1hms",
   "version": "0.1.0",
   "private": true,
   "description": "MCP server exposing 1HMS APIs as tools: register_patient, check_slot_availability, book_appointment",

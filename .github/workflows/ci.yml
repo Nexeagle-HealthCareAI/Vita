@@ -54,6 +54,6 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @tera/web-sdk build
-      - run: pnpm --filter @tera/web-demo exec playwright install --with-deps chromium
-      - run: pnpm --filter @tera/web-demo test
+      - run: pnpm --filter @vita/web-sdk build
+      - run: pnpm --filter @vita/web-demo exec playwright install --with-deps chromium
+      - run: pnpm --filter @vita/web-demo test

@@ -1,5 +1,5 @@
 {
-  "name": "@tera/protocol",
+  "name": "@vita/protocol",
   "version": "0.1.0",
   "description": "Shared, versioned WebSocket event contract for Tera clients and backend",
   "type": "module",

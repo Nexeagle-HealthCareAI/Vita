@@ -1,5 +1,5 @@
 {
-  "name": "@tera/rag",
+  "name": "@vita/rag",
   "version": "0.1.0",
   "private": true,
   "description": "Hybrid (BM25 + dense) retrieval over Qdrant for lab-test rules and insurance docs",

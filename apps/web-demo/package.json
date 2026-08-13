@@ -1,8 +1,8 @@
 {
-  "name": "@tera/web-demo",
+  "name": "@vita/web-demo",
   "version": "0.1.0",
   "private": true,
-  "description": "Reference receptionist dashboard consuming @tera/web-sdk",
+  "description": "Reference receptionist dashboard consuming @vita/web-sdk",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -14,7 +14,7 @@
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {
-    "@tera/web-sdk": "workspace:*",
+    "@vita/web-sdk": "workspace:*",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

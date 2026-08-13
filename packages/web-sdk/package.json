@@ -1,5 +1,5 @@
 {
-  "name": "@tera/web-sdk",
+  "name": "@vita/web-sdk",
   "version": "0.1.0",
   "description": "Browser client SDK for Tera voice assistant — audio capture, playback, WS session",
   "type": "module",
@@ -9,7 +9,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && cp src/worklet/tera-pcm-processor.js dist/tera-pcm-processor.js",
+    "build": "tsc -p tsconfig.json && node scripts/copy-worklet.mjs",
     "dev": "tsc -p tsconfig.json --watch",
     "lint": "eslint src",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -17,7 +17,7 @@
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {
-    "@tera/protocol": "workspace:*"
+    "@vita/protocol": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.6.3",

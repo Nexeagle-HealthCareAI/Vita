@@ -1,6 +1,6 @@
 """Silero VAD wrapper — authoritative turn-taking signal.
 
-Client-side VAD in @tera/web-sdk is advisory only (drives local barge-in
+Client-side VAD in @vita/web-sdk is advisory only (drives local barge-in
 UX); this service's VAD decision is what actually ends a turn and is what
 emits the CLEAR_PLAYBACK barge-in event back through the orchestrator and
 gateway to the client. See docs/ARCHITECTURE.md item 6.

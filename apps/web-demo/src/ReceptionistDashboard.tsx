@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { TeraWebSDK, type PatientFormFields, type TeraState } from '@tera/web-sdk';
+import { VitaWebSDK, type PatientFormFields, type VitaState } from '@vita/web-sdk';
 
 export function ReceptionistDashboard() {
-  const [state, setState] = useState<TeraState>('IDLE');
+  const [state, setState] = useState<VitaState>('IDLE');
   const [transcript, setTranscript] = useState('');
   const [formData, setFormData] = useState<PatientFormFields>({
     patient_name: '',
@@ -10,11 +10,11 @@ export function ReceptionistDashboard() {
     department: '',
   });
   const [lastError, setLastError] = useState<string | null>(null);
-  const [sdk, setSdk] = useState<TeraWebSDK | null>(null);
+  const [sdk, setSdk] = useState<VitaWebSDK | null>(null);
 
   useEffect(() => {
-    const instance = new TeraWebSDK({
-      gatewayOrigin: import.meta.env.VITE_GATEWAY_ORIGIN ?? 'https://gateway.tera.hospital',
+    const instance = new VitaWebSDK({
+      gatewayOrigin: import.meta.env.VITE_GATEWAY_ORIGIN ?? 'https://gateway.vita.hospital',
       authToken: getSessionJwt(), // provided by your app's own auth flow
       userRole: 'ROLE_RECEPTIONIST',
       onTranscript: (text) => setTranscript(text),
@@ -30,10 +30,10 @@ export function ReceptionistDashboard() {
 
   return (
     <div style={{ padding: 24, fontFamily: 'Arial, sans-serif', maxWidth: 480 }}>
-      <h2>1HMS Voice Registration Counter</h2>
+      <h2>1HMS Vita Registration Counter</h2>
 
       <p style={{ fontStyle: 'italic', color: '#666' }}>
-        {transcript || 'Click "Talk to Tera" to register patients or check doctor slots...'}
+        {transcript || 'Click "Talk to Vita" to register patients or check doctor slots...'}
       </p>
 
       {lastError && (
@@ -75,7 +75,7 @@ export function ReceptionistDashboard() {
           cursor: 'pointer',
         }}
       >
-        {isListening ? 'Stop Listening' : 'Talk to Tera'}
+        {isListening ? 'Stop Listening' : 'Talk to Vita'}
       </button>
     </div>
   );

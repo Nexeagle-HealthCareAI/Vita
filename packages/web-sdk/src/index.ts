@@ -1,5 +1,5 @@
-import { BinaryFrameType, decodeBinaryFrame, encodeBinaryFrame } from '@tera/protocol';
-import type { ServerControlEvent } from '@tera/protocol';
+import { BinaryFrameType, decodeBinaryFrame, encodeBinaryFrame } from '@vita/protocol';
+import type { ServerControlEvent } from '@vita/protocol';
 import { JitterBufferPlayer } from './playback.js';
 
 export type TeraState = 'IDLE' | 'LISTENING' | 'PROCESSING' | 'SPEAKING' | 'ERROR';
@@ -13,7 +13,7 @@ export interface PatientFormFields {
 }
 
 export interface TeraConfig {
-  /** Base HTTPS origin, e.g. "https://gateway.tera.hospital" — used for ticket exchange and derived into wss:// for the stream. */
+  /** Base HTTPS origin, e.g. "https://gateway.vita.hospital" — used for ticket exchange and derived into wss:// for the stream. */
   gatewayOrigin: string;
   /** Long-lived user JWT. Sent ONLY over HTTPS to /session/ticket — never placed in the WS URL. */
   authToken: string;
@@ -73,7 +73,7 @@ export class TeraWebSDK {
     // Short-lived, single-use ticket passed as a WS subprotocol rather than a
     // query-string token — it's still visible to the immediate proxy hop but
     // expires in seconds and can only be redeemed once, unlike a raw JWT.
-    this.ws = new WebSocket(`${wsUrl}/v1/stream`, [`tera-ticket.${ticket}`]);
+    this.ws = new WebSocket(`${wsUrl}/v1/stream`, [`vita-ticket.${ticket}`]);
     this.ws.binaryType = 'arraybuffer';
 
     this.ws.onopen = async () => {
@@ -221,5 +221,8 @@ export class TeraWebSDK {
     this.config.onError?.({ code, message, recoverable });
   }
 }
+
+export { TeraWebSDK as VitaWebSDK };
+export type { TeraConfig as VitaConfig, TeraState as VitaState };
 
 export { JitterBufferPlayer } from './playback.js';

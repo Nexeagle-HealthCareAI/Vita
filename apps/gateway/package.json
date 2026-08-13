@@ -1,5 +1,5 @@
 {
-  "name": "@tera/gateway",
+  "name": "@vita/gateway",
   "version": "0.1.0",
   "private": true,
   "description": "WS ingress: ticket auth, binary frame relay to the orchestrator",
@@ -15,7 +15,7 @@
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {
-    "@tera/protocol": "workspace:*",
+    "@vita/protocol": "workspace:*",
     "fastify": "^5.0.0",
     "@fastify/websocket": "^11.0.1",
     "jsonwebtoken": "^9.0.2",

@@ -1,9 +1,9 @@
 {
-  "name": "tera",
+  "name": "vita",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Tera voice assistant — monorepo (web SDK, gateway, orchestrator, MCP, RAG)",
+  "description": "Vita voice assistant — monorepo (web SDK, gateway, orchestrator, MCP, RAG)",
   "packageManager": "pnpm@9.12.0",
   "engines": {
     "node": ">=20"

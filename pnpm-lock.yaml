@@ -41,7 +41,7 @@ importers:
       '@fastify/websocket':
         specifier: ^11.0.1
         version: 11.3.0
-      '@tera/protocol':
+      '@vita/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
       fastify:
@@ -75,7 +75,7 @@ importers:
 
   apps/orchestrator:
     dependencies:
-      '@tera/protocol':
+      '@vita/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
       fastify:
@@ -103,7 +103,7 @@ importers:
 
   apps/web-demo:
     dependencies:
-      '@tera/web-sdk':
+      '@vita/web-sdk':
         specifier: workspace:*
         version: link:../../packages/web-sdk
       react:
@@ -188,7 +188,7 @@ importers:
 
   packages/web-sdk:
     dependencies:
-      '@tera/protocol':
+      '@vita/protocol':
         specifier: workspace:*
         version: link:../protocol
     devDependencies:

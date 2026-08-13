@@ -1,5 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { buildServer } from '../src/index.js';
+import { buildServer, extractTicketProtocol } from '../src/index.js';
+
+describe('gateway ticket protocol compatibility', () => {
+  it('extracts Vita ticket protocols', () => {
+    expect(extractTicketProtocol(['vita-ticket.test-ticket'])).toBe('test-ticket');
+  });
+
+  it('continues accepting legacy Tera ticket protocols', () => {
+    expect(extractTicketProtocol(['tera-ticket.legacy-ticket'])).toBe('legacy-ticket');
+  });
+
+  it('ignores unrelated protocols', () => {
+    expect(extractTicketProtocol(['audio', 'chat'])).toBeUndefined();
+  });
+});
 
 describe('gateway HTTP surface', () => {
   it('GET /healthz returns ok', async () => {

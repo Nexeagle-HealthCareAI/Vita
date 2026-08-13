@@ -3,7 +3,7 @@ import { TeraWebSDK } from '../src/index.js';
 
 describe('TeraWebSDK — ticket fetch & error handling', () => {
   const baseConfig = {
-    gatewayOrigin: 'https://gateway.tera.hospital',
+    gatewayOrigin: 'https://gateway.vita.hospital',
     authToken: 'test-jwt',
     userRole: 'ROLE_RECEPTIONIST' as const,
   };
@@ -29,7 +29,7 @@ describe('TeraWebSDK — ticket fetch & error handling', () => {
     );
     // never attempted a real JWT-in-URL connection — auth stayed on the HTTPS leg
     expect(global.fetch).toHaveBeenCalledWith(
-      'https://gateway.tera.hospital/session/ticket',
+      'https://gateway.vita.hospital/session/ticket',
       expect.objectContaining({
         headers: { Authorization: 'Bearer test-jwt' },
       }),

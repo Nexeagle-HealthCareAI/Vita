@@ -1,5 +1,5 @@
 {
-  "name": "@tera/orchestrator",
+  "name": "@vita/orchestrator",
   "version": "0.1.0",
   "private": true,
   "description": "Dialogue state manager: Redis session engine, RBAC, audit log, LLM/STT/TTS/MCP/RAG orchestration",
@@ -15,7 +15,7 @@
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {
-    "@tera/protocol": "workspace:*",
+    "@vita/protocol": "workspace:*",
     "ioredis": "^5.4.1",
     "fastify": "^5.0.0"
   },

@@ -13,6 +13,8 @@ export interface DialogueSession {
 }
 
 const SESSION_TTL_SECONDS = 60 * 30; // 30 min idle timeout
+const VITA_SESSION_PREFIX = 'vita:session:';
+const LEGACY_SESSION_PREFIX = 'tera:session:';
 
 /**
  * Redis-backed session store. In Phase 1 this points at a single Redis
@@ -23,18 +25,23 @@ const SESSION_TTL_SECONDS = 60 * 30; // 30 min idle timeout
 export class SessionStore {
   constructor(private redis: Redis) {}
 
-  private key(sessionId: string): string {
-    return `tera:session:${sessionId}`;
+  private keys(sessionId: string): string[] {
+    return [`${VITA_SESSION_PREFIX}${sessionId}`, `${LEGACY_SESSION_PREFIX}${sessionId}`];
   }
 
   async create(session: Omit<DialogueSession, 'updatedAt'>): Promise<DialogueSession> {
     const full: DialogueSession = { ...session, updatedAt: Date.now() };
-    await this.redis.set(this.key(session.sessionId), JSON.stringify(full), 'EX', SESSION_TTL_SECONDS);
+    await Promise.all(
+      this.keys(session.sessionId).map((key) =>
+        this.redis.set(key, JSON.stringify(full), 'EX', SESSION_TTL_SECONDS),
+      ),
+    );
     return full;
   }
 
   async get(sessionId: string): Promise<DialogueSession | null> {
-    const raw = await this.redis.get(this.key(sessionId));
+    const [vitaRaw, legacyRaw] = await Promise.all(this.keys(sessionId).map((key) => this.redis.get(key)));
+    const raw = vitaRaw ?? legacyRaw;
     return raw ? (JSON.parse(raw) as DialogueSession) : null;
   }
 
@@ -50,11 +57,13 @@ export class SessionStore {
     const current = await this.get(sessionId);
     if (!current) return null;
     const next = { ...current, ...patch, updatedAt: Date.now() };
-    await this.redis.set(this.key(sessionId), JSON.stringify(next), 'EX', SESSION_TTL_SECONDS);
+    await Promise.all(
+      this.keys(sessionId).map((key) => this.redis.set(key, JSON.stringify(next), 'EX', SESSION_TTL_SECONDS)),
+    );
     return next;
   }
 
   async destroy(sessionId: string): Promise<void> {
-    await this.redis.del(this.key(sessionId));
+    await this.redis.del(...this.keys(sessionId));
   }
 }

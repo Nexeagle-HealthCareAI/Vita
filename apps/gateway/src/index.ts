@@ -4,6 +4,17 @@ import { redeemTicket, verifyJwtAndIssueTicket } from './ticket.js';
 
 const JWT_SECRET = process.env.JWT_SIGNING_SECRET ?? 'change-me';
 const PORT = Number(process.env.GATEWAY_PORT ?? 8080);
+const TICKET_PROTOCOL_PREFIXES = ['vita-ticket.', 'tera-ticket.'] as const;
+
+export function extractTicketProtocol(protocols: string[]): string | undefined {
+  const ticketProtocol = protocols.find((protocol) =>
+    TICKET_PROTOCOL_PREFIXES.some((prefix) => protocol.startsWith(prefix)),
+  );
+  if (!ticketProtocol) return undefined;
+
+  const prefix = TICKET_PROTOCOL_PREFIXES.find((candidate) => ticketProtocol.startsWith(candidate));
+  return prefix ? ticketProtocol.slice(prefix.length) : undefined;
+}
 
 export function buildServer() {
   const app = Fastify({ logger: true });
@@ -26,14 +37,14 @@ export function buildServer() {
   });
 
   // Step 2: WS upgrade. Ticket is passed as a subprotocol
-  // (`tera-ticket.<ticket>`), redeemed exactly once, and the resulting
+  // (`vita-ticket.<ticket>`; legacy `tera-ticket.<ticket>` is also accepted),
+  // redeemed exactly once, and the resulting
   // claims (identity + role) are what everything downstream trusts —
   // NOT anything else the client sends on this connection.
   app.register(async (instance) => {
     instance.get('/v1/stream', { websocket: true }, (socket, req) => {
       const protocols = req.headers['sec-websocket-protocol']?.split(',').map((p) => p.trim()) ?? [];
-      const ticketProtocol = protocols.find((p) => p.startsWith('tera-ticket.'));
-      const ticket = ticketProtocol?.slice('tera-ticket.'.length);
+      const ticket = extractTicketProtocol(protocols);
 
       const claims = ticket ? redeemTicket(ticket) : null;
       if (!claims) {

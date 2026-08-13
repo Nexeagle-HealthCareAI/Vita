@@ -44,4 +44,23 @@ describe('SessionStore (backed by ioredis-mock)', () => {
     await store.destroy('s2');
     expect(await store.get('s2')).toBeNull();
   });
+
+  it('reads sessions written with the legacy Tera key prefix', async () => {
+    const redis = new RedisMock();
+    const store = new SessionStore(redis);
+    await redis.set(
+      'tera:session:legacy',
+      JSON.stringify({
+        sessionId: 'legacy',
+        userId: 'u-legacy',
+        role: 'ROLE_RECEPTIONIST',
+        turnState: 'IDLE',
+        slots: {},
+        resumeToken: 'legacy-token',
+        updatedAt: Date.now(),
+      }),
+    );
+
+    expect((await store.get('legacy'))?.userId).toBe('u-legacy');
+  });
 });
