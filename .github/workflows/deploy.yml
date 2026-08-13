@@ -2,11 +2,16 @@ name: Deploy
 
 on:
   push:
-    branches: [main]
+    branches: [develop, main]
 
 concurrency:
-  group: deploy-prod
+  group: deploy-${{ github.ref_name }}
   cancel-in-progress: false
+
+env:
+  # GHCR lowercases the org -- github.repository_owner is "Nexeagle-HealthCareAI".
+  # docker-compose.prod.yml's image references must match this exactly.
+  IMAGE_OWNER: nexeagle-healthcareai
 
 jobs:
   build-and-push:
@@ -14,7 +19,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    needs: []
     steps:
       - uses: actions/checkout@v4
 
@@ -24,15 +28,38 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Tags each image with the branch name (develop/main) so deploy-dev and
+      # deploy-prod each pull their own build via IMAGE_TAG in .env, instead of both
+      # environments racing to run whichever branch pushed last under a shared :latest.
+      # main additionally gets :latest, for anything that wants the "current prod" tag
+      # without knowing the branch name.
+      - name: Metadata (gateway)
+        id: meta-gateway
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ env.IMAGE_OWNER }}/vita-gateway
+          tags: |
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
       - name: Build & push gateway
         uses: docker/build-push-action@v6
         with:
           context: .
           file: apps/gateway/Dockerfile
           push: true
+          tags: ${{ steps.meta-gateway.outputs.tags }}
+          cache-from: type=gha,scope=vita-gateway
+          cache-to: type=gha,mode=max,scope=vita-gateway
+
+      - name: Metadata (orchestrator)
+        id: meta-orchestrator
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ env.IMAGE_OWNER }}/vita-orchestrator
           tags: |
-            ghcr.io/${{ github.repository_owner }}/vita-gateway:latest
-            ghcr.io/${{ github.repository_owner }}/tera-gateway:latest
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Build & push orchestrator
         uses: docker/build-push-action@v6
@@ -40,50 +67,59 @@ jobs:
           context: .
           file: apps/orchestrator/Dockerfile
           push: true
+          tags: ${{ steps.meta-orchestrator.outputs.tags }}
+          cache-from: type=gha,scope=vita-orchestrator
+          cache-to: type=gha,mode=max,scope=vita-orchestrator
+
+      - name: Metadata (audio-preprocess)
+        id: meta-audio
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ env.IMAGE_OWNER }}/vita-audio-preprocess
           tags: |
-            ghcr.io/${{ github.repository_owner }}/vita-orchestrator:latest
-            ghcr.io/${{ github.repository_owner }}/tera-orchestrator:latest
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Build & push audio-preprocess
         uses: docker/build-push-action@v6
         with:
           context: apps/audio-preprocess
           push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/vita-audio-preprocess:latest
-            ghcr.io/${{ github.repository_owner }}/tera-audio-preprocess:latest
+          tags: ${{ steps.meta-audio.outputs.tags }}
+          cache-from: type=gha,scope=vita-audio-preprocess
+          cache-to: type=gha,mode=max,scope=vita-audio-preprocess
 
-  deploy:
+  # ─────────────────────────────────────────────────────────────────────────
+  deploy-dev:
+    name: "Deploy → Dev"
     runs-on: ubuntu-latest
     needs: build-and-push
+    if: github.ref == 'refs/heads/develop'
     steps:
       - uses: actions/checkout@v4
 
-      - name: Copy compose + infra files to the E2E VM
+      - name: Copy compose + infra files to the Dev VM
         uses: appleboy/scp-action@v0.1.7
         with:
-          host: ${{ secrets.E2E_VM_HOST }}
+          host: ${{ secrets.E2E_VM_HOST_DEV }}
           username: ${{ secrets.E2E_VM_USER }}
-          key: ${{ secrets.E2E_VM_SSH_KEY }}
+          password: ${{ secrets.E2E_VM_PASSWORD_DEV }}
           source: "docker-compose.prod.yml,infra/nginx/vita.conf"
-          target: "~/tera-deploy"
+          target: "~/vita-deploy"
 
-      - name: Pull new images and restart the stack
+      - name: Write .env, pull, and restart the stack
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.E2E_VM_HOST }}
+          host: ${{ secrets.E2E_VM_HOST_DEV }}
           username: ${{ secrets.E2E_VM_USER }}
-          key: ${{ secrets.E2E_VM_SSH_KEY }}
-          # .env is regenerated from GitHub secrets on every deploy, not hand-maintained
-          # on the VM (docs/BUILD_GUIDE.md §4.4 previously said to copy it there
-          # manually -- that step never actually existed in this workflow, so gateway/
-          # orchestrator's `env_file: .env` in docker-compose.prod.yml had nothing to
-          # read until now). In-cluster URLs (redis/qdrant/orchestrator/audio-preprocess)
-          # use Compose's service-name DNS, not secrets -- only genuinely secret values
-          # come from `secrets.*`.
+          password: ${{ secrets.E2E_VM_PASSWORD_DEV }}
+          port: 22
+          command_timeout: 10m
           script: |
-            cd ~/tera-deploy
+            set -e
+            cd ~/vita-deploy
             cat > .env <<EOF
+            IMAGE_TAG=develop
             JWT_SIGNING_SECRET=${{ secrets.JWT_SIGNING_SECRET }}
             SARVAM_API_KEY=${{ secrets.SARVAM_API_KEY }}
             SARVAM_STT_ENDPOINT=https://api.sarvam.ai/speech-to-text-streaming
@@ -91,7 +127,7 @@ jobs:
             GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
             GROQ_MODEL_ADMIN=llama-3.1-8b-instant
             GROQ_MODEL_DOCTOR=llama-3.1-70b-versatile
-            HMS_API_BASE_URL=${{ secrets.HMS_API_BASE_URL }}
+            HMS_API_BASE_URL=${{ secrets.HMS_API_BASE_URL_DEV }}
             HMS_API_KEY=${{ secrets.HMS_API_KEY }}
             REDIS_URL=redis://redis:6379
             QDRANT_URL=http://qdrant:6333
@@ -99,6 +135,111 @@ jobs:
             AUDIO_PREPROCESS_URL=http://audio-preprocess:8090
             EOF
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-            docker compose -f docker-compose.prod.yml pull
+
+            # docker pull occasionally hits a transient containerd content-store race --
+            # retry a couple of times before giving up, rather than failing the whole
+            # deploy (same pattern as easyHMSAPI's deploy-api.yml).
+            PULLED=0
+            for i in 1 2 3; do
+              if docker compose -f docker-compose.prod.yml pull; then PULLED=1; break; fi
+              echo "docker compose pull attempt $i failed, retrying in 5s..."
+              sleep 5
+            done
+            if [ "$PULLED" != 1 ]; then
+              echo "docker compose pull failed after 3 attempts — aborting without touching the running stack" >&2
+              exit 1
+            fi
+
             docker compose -f docker-compose.prod.yml up -d --remove-orphans
             docker image prune -f
+
+      - name: Health check
+        run: |
+          sleep 10
+          for i in 1 2 3 4 5; do
+            S=$(curl -s -o /dev/null -w '%{http_code}' \
+                http://${{ secrets.E2E_VM_HOST_DEV }}:8080/healthz 2>/dev/null || echo 000)
+            echo "Attempt $i — HTTP $S"
+            [ "$S" = "200" ] && echo "✅ Vita gateway is up (dev)" && exit 0
+            sleep 10
+          done
+          echo "⚠️ Health check inconclusive — check: docker compose -f ~/vita-deploy/docker-compose.prod.yml logs"
+          exit 0
+
+  # ─────────────────────────────────────────────────────────────────────────
+  deploy-prod:
+    name: "Deploy → Prod"
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      # NOTE: E2E_VM_HOST_PROD / E2E_VM_PASSWORD_PROD / HMS_API_BASE_URL_PROD don't
+      # exist as GitHub secrets yet (only the _DEV ones + HMS_API_BASE_URL_PROD do as
+      # of 2026-08-13) -- this job is wired up and ready, but will fail at this step
+      # until a prod VM exists and those secrets are added.
+      - name: Copy compose + infra files to the Prod VM
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.E2E_VM_HOST_PROD }}
+          username: ${{ secrets.E2E_VM_USER }}
+          password: ${{ secrets.E2E_VM_PASSWORD_PROD }}
+          source: "docker-compose.prod.yml,infra/nginx/vita.conf"
+          target: "~/vita-deploy"
+
+      - name: Write .env, pull, and restart the stack
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.E2E_VM_HOST_PROD }}
+          username: ${{ secrets.E2E_VM_USER }}
+          password: ${{ secrets.E2E_VM_PASSWORD_PROD }}
+          port: 22
+          command_timeout: 10m
+          script: |
+            set -e
+            cd ~/vita-deploy
+            cat > .env <<EOF
+            IMAGE_TAG=latest
+            JWT_SIGNING_SECRET=${{ secrets.JWT_SIGNING_SECRET }}
+            SARVAM_API_KEY=${{ secrets.SARVAM_API_KEY }}
+            SARVAM_STT_ENDPOINT=https://api.sarvam.ai/speech-to-text-streaming
+            SARVAM_TTS_ENDPOINT=https://api.sarvam.ai/text-to-speech
+            GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
+            GROQ_MODEL_ADMIN=llama-3.1-8b-instant
+            GROQ_MODEL_DOCTOR=llama-3.1-70b-versatile
+            HMS_API_BASE_URL=${{ secrets.HMS_API_BASE_URL_PROD }}
+            HMS_API_KEY=${{ secrets.HMS_API_KEY }}
+            REDIS_URL=redis://redis:6379
+            QDRANT_URL=http://qdrant:6333
+            ORCHESTRATOR_INTERNAL_URL=ws://orchestrator:8081
+            AUDIO_PREPROCESS_URL=http://audio-preprocess:8090
+            EOF
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            PULLED=0
+            for i in 1 2 3; do
+              if docker compose -f docker-compose.prod.yml pull; then PULLED=1; break; fi
+              echo "docker compose pull attempt $i failed, retrying in 5s..."
+              sleep 5
+            done
+            if [ "$PULLED" != 1 ]; then
+              echo "docker compose pull failed after 3 attempts — aborting without touching the running stack" >&2
+              exit 1
+            fi
+
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+            docker image prune -f
+
+      - name: Health check
+        run: |
+          sleep 10
+          for i in 1 2 3 4 5; do
+            S=$(curl -s -o /dev/null -w '%{http_code}' \
+                http://${{ secrets.E2E_VM_HOST_PROD }}:8080/healthz 2>/dev/null || echo 000)
+            echo "Attempt $i — HTTP $S"
+            [ "$S" = "200" ] && echo "✅ Vita gateway is up (prod)" && exit 0
+            sleep 10
+          done
+          echo "⚠️ Health check inconclusive — check: docker compose -f ~/vita-deploy/docker-compose.prod.yml logs"
+          exit 0

@@ -1,6 +1,11 @@
-# Phase 1 production stack — single E2E Networks VM behind Nginx.
-# Deployed by .github/workflows/deploy.yml via SSH; images are pulled from
-# ghcr.io rather than built on the VM. See docs/BUILD_GUIDE.md §7.
+# Phase 1 stack — one E2E Networks VM behind Nginx, used for BOTH dev and prod
+# deploys (same compose file, different VM + .env per environment -- see
+# .github/workflows/deploy.yml's deploy-dev/deploy-prod jobs). Images are pulled
+# from ghcr.io rather than built on the VM. See docs/BUILD_GUIDE.md §7.
+#
+# IMAGE_TAG comes from the generated .env (deploy-dev writes "develop", deploy-prod
+# writes "latest") so each environment's VM pulls its own build, not whichever branch
+# happened to push last.
 services:
   nginx:
     image: nginx:1.27-alpine
@@ -27,8 +32,15 @@ services:
     restart: unless-stopped
 
   gateway:
-    image: ghcr.io/nexeagle/vita-gateway:latest
+    image: ghcr.io/nexeagle-healthcareai/vita-gateway:${IMAGE_TAG:-latest}
     env_file: .env
+    # Exposed directly (not just through nginx) so CI's deploy health check can reach
+    # it without depending on TLS certs already being in place on a fresh VM -- nginx's
+    # :443 server block fails to even start without real certs at
+    # infra/nginx/certs/{fullchain,privkey}.pem (see BUILD_GUIDE §4.3), same raw-port
+    # health-check convention used elsewhere in this org (e.g. easyHMSAPI's deploy-api.yml).
+    ports:
+      - "8080:8080"
     depends_on:
       - orchestrator
     restart: unless-stopped
@@ -37,14 +49,14 @@ services:
         condition: on-failure
 
   orchestrator:
-    image: ghcr.io/nexeagle/vita-orchestrator:latest
+    image: ghcr.io/nexeagle-healthcareai/vita-orchestrator:${IMAGE_TAG:-latest}
     env_file: .env
     depends_on:
       - redis
     restart: unless-stopped
 
   audio-preprocess:
-    image: ghcr.io/nexeagle/vita-audio-preprocess:latest
+    image: ghcr.io/nexeagle-healthcareai/vita-audio-preprocess:${IMAGE_TAG:-latest}
     restart: unless-stopped
 
 volumes:
