@@ -5,9 +5,9 @@ import { ForbiddenError } from '../src/rbac.js';
 
 function mockHms() {
   const client = Object.create(HmsClient.prototype) as HmsClient;
-  client.registerPatient = vi.fn().mockResolvedValue({ patientId: 'p-1' });
-  client.checkSlotAvailability = vi.fn().mockResolvedValue({ slots: [] });
-  client.bookAppointment = vi.fn().mockResolvedValue({ appointmentId: 'a-1' });
+  client.findDoctors = vi.fn().mockResolvedValue({ doctors: [{ doctorId: 'd-1', fullName: 'Dr. Test' }], totalCount: 1 });
+  client.checkDoctorAvailability = vi.fn().mockResolvedValue({ isAvailable: true, reason: null, shifts: [] });
+  client.bookAppointment = vi.fn().mockResolvedValue({ success: true, message: null, appointmentId: 'a-1', patientId: 'p-1', isReminderSent: true });
   return client;
 }
 
@@ -15,42 +15,39 @@ describe('executeTool', () => {
   it('denies a forbidden role before ever calling HmsClient', async () => {
     const hms = mockHms();
     await expect(
-      executeTool('register_patient', { name: 'x', phone: 'y', department: 'z' }, 'ROLE_DOCTOR', hms),
+      executeTool(
+        'book_appointment',
+        { doctorId: 'd-1', patientName: 'x', patientMobile: 'y', preferredDate: '2026-08-20' },
+        'ROLE_DOCTOR',
+        hms,
+      ),
     ).rejects.toThrow(ForbiddenError);
-    expect(hms.registerPatient).not.toHaveBeenCalled();
+    expect(hms.bookAppointment).not.toHaveBeenCalled();
   });
 
-  it('dispatches register_patient to HmsClient.registerPatient for an allowed role', async () => {
+  it('dispatches find_doctors to HmsClient.findDoctors for both allowed roles', async () => {
     const hms = mockHms();
-    const result = await executeTool(
-      'register_patient',
-      { name: 'Test Patient', phone: '9999999999', department: 'Cardiology' },
-      'ROLE_RECEPTIONIST',
-      hms,
-    );
-    expect(result).toEqual({ patientId: 'p-1' });
-    expect(hms.registerPatient).toHaveBeenCalledWith({
-      name: 'Test Patient',
-      phone: '9999999999',
-      department: 'Cardiology',
-    });
+    const result = await executeTool('find_doctors', { specialtyCategory: 'Cardiology' }, 'ROLE_RECEPTIONIST', hms);
+    expect(result).toEqual({ doctors: [{ doctorId: 'd-1', fullName: 'Dr. Test' }], totalCount: 1 });
+    expect(hms.findDoctors).toHaveBeenCalledWith({ specialtyCategory: 'Cardiology' });
+
+    const hms2 = mockHms();
+    await executeTool('find_doctors', {}, 'ROLE_DOCTOR', hms2);
+    expect(hms2.findDoctors).toHaveBeenCalled();
   });
 
-  it('dispatches check_slot_availability for both receptionist and doctor roles', async () => {
+  it('dispatches check_doctor_availability for both receptionist and doctor roles', async () => {
     const hms = mockHms();
-    await executeTool('check_slot_availability', { department: 'Cardiology', date: '2026-08-20' }, 'ROLE_DOCTOR', hms);
-    expect(hms.checkSlotAvailability).toHaveBeenCalledWith({ department: 'Cardiology', date: '2026-08-20' });
+    await executeTool('check_doctor_availability', { doctorId: 'd-1', date: '2026-08-20' }, 'ROLE_DOCTOR', hms);
+    expect(hms.checkDoctorAvailability).toHaveBeenCalledWith({ doctorId: 'd-1', date: '2026-08-20' });
   });
 
-  it('dispatches book_appointment to HmsClient.bookAppointment', async () => {
+  it('dispatches book_appointment to HmsClient.bookAppointment (receptionist-only)', async () => {
     const hms = mockHms();
-    const result = await executeTool(
-      'book_appointment',
-      { patientId: 'p-1', doctorId: 'd-1', slotId: 's-1' },
-      'ROLE_RECEPTIONIST',
-      hms,
-    );
-    expect(result).toEqual({ appointmentId: 'a-1' });
+    const input = { doctorId: 'd-1', patientName: 'Test Patient', patientMobile: '9999999999', preferredDate: '2026-08-20' };
+    const result = await executeTool('book_appointment', input, 'ROLE_RECEPTIONIST', hms);
+    expect(result).toEqual({ success: true, message: null, appointmentId: 'a-1', patientId: 'p-1', isReminderSent: true });
+    expect(hms.bookAppointment).toHaveBeenCalledWith(input);
   });
 
   it('rejects a tool name RBAC has never heard of before ever calling HmsClient', async () => {

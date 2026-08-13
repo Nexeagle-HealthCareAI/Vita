@@ -2,8 +2,8 @@ export type Role = 'ROLE_RECEPTIONIST' | 'ROLE_DOCTOR';
 
 /** Which role may invoke which MCP tool / data domain. Deny-by-default. */
 const TOOL_PERMISSIONS: Record<string, Role[]> = {
-  register_patient: ['ROLE_RECEPTIONIST'],
-  check_slot_availability: ['ROLE_RECEPTIONIST', 'ROLE_DOCTOR'],
+  find_doctors: ['ROLE_RECEPTIONIST', 'ROLE_DOCTOR'],
+  check_doctor_availability: ['ROLE_RECEPTIONIST', 'ROLE_DOCTOR'],
   book_appointment: ['ROLE_RECEPTIONIST'],
   read_patient_emr: ['ROLE_DOCTOR'],
   write_clinical_note: ['ROLE_DOCTOR'],

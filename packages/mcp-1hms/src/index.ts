@@ -8,7 +8,13 @@ import { HmsClient } from './hmsClient.js';
 // instead of going through a spawned stdio MCP transport. buildMcpServer below still
 // works unchanged as a real stdio MCP server for any other MCP client.
 export { HmsClient } from './hmsClient.js';
-export type { RegisterPatientInput, SlotAvailabilityInput, BookAppointmentInput } from './hmsClient.js';
+export type {
+  FindDoctorsInput,
+  DoctorSummary,
+  CheckDoctorAvailabilityInput,
+  AvailabilityShift,
+  BookAppointmentInput,
+} from './hmsClient.js';
 
 const hms = new HmsClient(
   process.env.HMS_API_BASE_URL ?? 'http://localhost:5000',
@@ -16,44 +22,50 @@ const hms = new HmsClient(
 );
 
 export function buildMcpServer(client: HmsClient = hms): McpServer {
-  const server = new McpServer({ name: 'tera-1hms', version: '0.1.0' });
+  const server = new McpServer({ name: 'vita-1hms', version: '0.2.0' });
 
+  // No standalone patient-registration endpoint exists on 1HMS's public API -- a
+  // booking creates/matches the patient inline (see book_appointment below). This tool
+  // exists to resolve "which doctor" from a department/specialty name first, since
+  // check_doctor_availability and book_appointment both require a specific doctorId
+  // and 1HMS has no department-wide slot search.
   server.tool(
-    'register_patient',
-    'Register a new patient at the front desk',
+    'find_doctors',
+    'Find doctors by specialty/department, city, or name -- use this first to get a doctorId before checking availability or booking',
     {
-      name: z.string(),
-      phone: z.string(),
-      department: z.string(),
-      dob: z.string().optional(),
+      specialtyCategory: z.string().optional().describe('e.g. "Cardiology", "Gynaecology"'),
+      city: z.string().optional(),
+      search: z.string().optional().describe('Free-text doctor name search'),
     },
     async (input) => {
-      const result = await client.registerPatient(input);
+      const result = await client.findDoctors(input);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     },
   );
 
   server.tool(
-    'check_slot_availability',
-    'Check available appointment slots for a department/doctor/date',
+    'check_doctor_availability',
+    "Check whether a specific doctor is working on a given date, and their shift timings. There is no discrete slot list -- a booking is a non-binding preferred time, confirmed by staff later.",
     {
-      department: z.string(),
-      doctorId: z.string().optional(),
-      date: z.string(),
+      doctorId: z.string(),
+      date: z.string().describe('YYYY-MM-DD'),
     },
     async (input) => {
-      const result = await client.checkSlotAvailability(input);
+      const result = await client.checkDoctorAvailability(input);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     },
   );
 
   server.tool(
     'book_appointment',
-    'Book a confirmed appointment slot for a patient',
+    'Request an appointment for a patient with a specific doctor. Registers the patient as part of the same call -- there is no separate registration step. Non-binding: the hospital confirms the exact time later.',
     {
-      patientId: z.string(),
       doctorId: z.string(),
-      slotId: z.string(),
+      patientName: z.string(),
+      patientMobile: z.string(),
+      preferredDate: z.string().describe('YYYY-MM-DD'),
+      preferredTime: z.string().optional().describe('HH:MM, optional -- a preference, not a reservation'),
+      reason: z.string().optional(),
     },
     async (input) => {
       const result = await client.bookAppointment(input);

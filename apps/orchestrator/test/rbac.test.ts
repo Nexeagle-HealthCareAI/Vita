@@ -2,8 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { ForbiddenError, assertToolPermission } from '../src/rbac.js';
 
 describe('RBAC tool permissions', () => {
-  it('allows a receptionist to register a patient', () => {
-    expect(() => assertToolPermission('register_patient', 'ROLE_RECEPTIONIST')).not.toThrow();
+  it('allows both a receptionist and a doctor to find doctors', () => {
+    expect(() => assertToolPermission('find_doctors', 'ROLE_RECEPTIONIST')).not.toThrow();
+    expect(() => assertToolPermission('find_doctors', 'ROLE_DOCTOR')).not.toThrow();
+  });
+
+  it('allows a receptionist to book an appointment', () => {
+    expect(() => assertToolPermission('book_appointment', 'ROLE_RECEPTIONIST')).not.toThrow();
   });
 
   it('denies a receptionist reading EMR data', () => {
@@ -12,8 +17,8 @@ describe('RBAC tool permissions', () => {
     );
   });
 
-  it('denies a doctor calling register_patient (out of scope for that role)', () => {
-    expect(() => assertToolPermission('register_patient', 'ROLE_DOCTOR')).toThrow(ForbiddenError);
+  it('denies a doctor calling book_appointment (out of scope for that role)', () => {
+    expect(() => assertToolPermission('book_appointment', 'ROLE_DOCTOR')).toThrow(ForbiddenError);
   });
 
   it('denies any role for an unknown tool (deny-by-default)', () => {

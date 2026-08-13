@@ -21,9 +21,13 @@ function mockSarvam(audio = new Uint8Array([1, 2, 3])) {
 
 function mockHms() {
   const hms = Object.create(HmsClient.prototype) as HmsClient;
-  hms.checkSlotAvailability = vi.fn().mockResolvedValue({ slots: [{ slotId: 's-1', time: '10:00', doctorId: 'd-1' }] });
-  hms.registerPatient = vi.fn();
-  hms.bookAppointment = vi.fn();
+  hms.findDoctors = vi.fn();
+  hms.checkDoctorAvailability = vi
+    .fn()
+    .mockResolvedValue({ isAvailable: true, reason: null, shifts: [{ name: 'Morning', startTime: '09:00:00', endTime: '13:00:00' }] });
+  hms.bookAppointment = vi
+    .fn()
+    .mockResolvedValue({ success: true, message: 'Your appointment request has been received.', appointmentId: 'a-1', patientId: 'p-1', isReminderSent: true });
   return hms;
 }
 
@@ -42,13 +46,13 @@ function baseSession(overrides: Partial<DialogueSession> = {}): DialogueSession 
 }
 
 describe('runTurn — scripted conversation (golden-fixture style, per docs/BUILD_GUIDE.md §3.5)', () => {
-  it('a transcript that needs a tool call: Groq requests the tool, gets the result, replies, then speaks it', async () => {
+  it('a transcript that needs a tool call: Groq requests availability, gets shifts (not slots), replies, then speaks it', async () => {
     const groq = mockGroq([
       {
         content: null,
-        toolCalls: [{ id: 'call_1', name: 'check_slot_availability', arguments: { department: 'Cardiology', date: '2026-08-20' } }],
+        toolCalls: [{ id: 'call_1', name: 'check_doctor_availability', arguments: { doctorId: 'd-1', date: '2026-08-20' } }],
       },
-      { content: 'There is a slot at 10:00 with Dr. Patel.', toolCalls: [] },
+      { content: 'Dr. Patel is in from 9 to 1 that day.', toolCalls: [] },
     ]);
     const sarvam = mockSarvam();
     const hms = mockHms();
@@ -56,27 +60,63 @@ describe('runTurn — scripted conversation (golden-fixture style, per docs/BUIL
 
     const result = await runTurn({
       session: baseSession(),
-      transcript: 'Any cardiology slots on the 20th?',
+      transcript: 'Is Dr. Patel around on the 20th?',
       groq,
       sarvam,
       hms,
     });
 
-    expect(result.toolCallsExecuted).toEqual(['check_slot_availability']);
-    expect(result.replyText).toBe('There is a slot at 10:00 with Dr. Patel.');
+    expect(result.toolCallsExecuted).toEqual(['check_doctor_availability']);
+    expect(result.replyText).toBe('Dr. Patel is in from 9 to 1 that day.');
     expect(Array.from(result.audio)).toEqual([1, 2, 3]);
-    expect(hms.checkSlotAvailability).toHaveBeenCalledWith({ department: 'Cardiology', date: '2026-08-20' });
-    expect(sarvam.synthesize).toHaveBeenCalledWith('There is a slot at 10:00 with Dr. Patel.');
+    expect(hms.checkDoctorAvailability).toHaveBeenCalledWith({ doctorId: 'd-1', date: '2026-08-20' });
+    expect(sarvam.synthesize).toHaveBeenCalledWith('Dr. Patel is in from 9 to 1 that day.');
 
-    // Audit trail: one AUDIT line for the successful tool call.
     const auditLines = auditSpy.mock.calls.map((c) => JSON.parse(c[0] as string));
     expect(auditLines).toContainEqual(
-      expect.objectContaining({ type: 'AUDIT', action: 'tool_call:check_slot_availability', outcome: 'success' }),
+      expect.objectContaining({ type: 'AUDIT', action: 'tool_call:check_doctor_availability', outcome: 'success' }),
     );
     auditSpy.mockRestore();
 
-    // History grows: system + user + assistant(tool-request) + tool result + final assistant.
-    expect(result.updatedHistory.at(-1)).toEqual({ role: 'assistant', content: 'There is a slot at 10:00 with Dr. Patel.' });
+    expect(result.updatedHistory.at(-1)).toEqual({ role: 'assistant', content: 'Dr. Patel is in from 9 to 1 that day.' });
+  });
+
+  it('a multi-step conversation: find a doctor, then book -- patient details go straight into book_appointment', async () => {
+    const groq = mockGroq([
+      { content: null, toolCalls: [{ id: 'call_1', name: 'find_doctors', arguments: { specialtyCategory: 'Cardiology' } }] },
+      {
+        content: null,
+        toolCalls: [
+          {
+            id: 'call_2',
+            name: 'book_appointment',
+            arguments: { doctorId: 'd-1', patientName: 'Riya Sharma', patientMobile: '9999999999', preferredDate: '2026-08-20' },
+          },
+        ],
+      },
+      { content: "Booked -- we'll confirm the exact time with you shortly.", toolCalls: [] },
+    ]);
+    const sarvam = mockSarvam();
+    const hms = mockHms();
+    hms.findDoctors = vi.fn().mockResolvedValue({ doctors: [{ doctorId: 'd-1', fullName: 'Dr. Patel' }], totalCount: 1 });
+
+    const result = await runTurn({
+      session: baseSession(),
+      transcript: 'Book Riya Sharma with a cardiologist for the 20th',
+      groq,
+      sarvam,
+      hms,
+    });
+
+    expect(result.toolCallsExecuted).toEqual(['find_doctors', 'book_appointment']);
+    expect(hms.bookAppointment).toHaveBeenCalledWith({
+      doctorId: 'd-1',
+      patientName: 'Riya Sharma',
+      patientMobile: '9999999999',
+      preferredDate: '2026-08-20',
+    });
+    // No separate register_patient call anywhere -- there's nothing to register with.
+    expect(result.replyText).toContain('Booked');
   });
 
   it('a transcript needing no tool at all replies directly, still gets spoken', async () => {
@@ -90,10 +130,15 @@ describe('runTurn — scripted conversation (golden-fixture style, per docs/BUIL
     expect(result.replyText).toBe('Sure, how can I help?');
   });
 
-  it('a doctor calling a receptionist-only tool gets an RBAC denial, audited and surfaced to the model -- not a crash', async () => {
+  it('a doctor calling book_appointment (receptionist-only) gets an RBAC denial, audited and surfaced to the model -- not a crash', async () => {
     const groq = mockGroq([
-      { content: null, toolCalls: [{ id: 'call_1', name: 'register_patient', arguments: { name: 'x', phone: 'y', department: 'z' } }] },
-      { content: "I'm not able to do that as a doctor -- front desk can register the patient.", toolCalls: [] },
+      {
+        content: null,
+        toolCalls: [
+          { id: 'call_1', name: 'book_appointment', arguments: { doctorId: 'd-1', patientName: 'x', patientMobile: 'y', preferredDate: '2026-08-20' } },
+        ],
+      },
+      { content: "I'm not able to do that as a doctor -- front desk can book it.", toolCalls: [] },
     ]);
     const sarvam = mockSarvam();
     const hms = mockHms();
@@ -101,17 +146,17 @@ describe('runTurn — scripted conversation (golden-fixture style, per docs/BUIL
 
     const result = await runTurn({
       session: baseSession({ role: 'ROLE_DOCTOR' }),
-      transcript: 'Register a new patient named x',
+      transcript: 'Book a new appointment for x',
       groq,
       sarvam,
       hms,
     });
 
     expect(result.toolCallsExecuted).toEqual([]); // denied, not executed
-    expect(hms.registerPatient).not.toHaveBeenCalled();
+    expect(hms.bookAppointment).not.toHaveBeenCalled();
     const auditLines = auditSpy.mock.calls.map((c) => JSON.parse(c[0] as string));
     expect(auditLines).toContainEqual(
-      expect.objectContaining({ type: 'AUDIT', action: 'tool_call:register_patient', outcome: 'denied' }),
+      expect.objectContaining({ type: 'AUDIT', action: 'tool_call:book_appointment', outcome: 'denied' }),
     );
     auditSpy.mockRestore();
     expect(result.replyText).toContain("not able to do that");
@@ -139,7 +184,7 @@ describe('runTurn — round cap (a live call must never hang)', () => {
     // Groq keeps requesting the same tool call every round, never producing a final answer.
     const alwaysToolCall: GroqChatResult = {
       content: null,
-      toolCalls: [{ id: 'call_x', name: 'check_slot_availability', arguments: { department: 'Cardiology', date: '2026-08-20' } }],
+      toolCalls: [{ id: 'call_x', name: 'check_doctor_availability', arguments: { doctorId: 'd-1', date: '2026-08-20' } }],
     };
     const groq = mockGroq([alwaysToolCall, alwaysToolCall, alwaysToolCall, alwaysToolCall, alwaysToolCall]);
     const sarvam = mockSarvam();

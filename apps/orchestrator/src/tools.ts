@@ -6,39 +6,42 @@ import type { GroqToolSchema } from './groq.js';
  * JSON Schema equivalents of the Zod tool definitions in
  * packages/mcp-1hms/src/index.ts's buildMcpServer -- hand-written rather than generated
  * (zod-to-json-schema) since there are only 3 simple tools; keep these in sync manually
- * if the MCP tool shapes change.
+ * if the MCP tool shapes change. Reshaped to match easyHMSAPI's real public API: no
+ * standalone patient-registration endpoint exists (book_appointment registers inline),
+ * and there is no slot-reservation system (availability is shift windows, not slot IDs)
+ * -- see hmsClient.ts's file header for the full explanation.
  */
 export const GROQ_TOOL_SCHEMAS: GroqToolSchema[] = [
   {
     type: 'function',
     function: {
-      name: 'register_patient',
-      description: 'Register a new patient at the front desk',
+      name: 'find_doctors',
+      description:
+        'Find doctors by specialty/department, city, or name. Use this first to get a doctorId before checking availability or booking.',
       parameters: {
         type: 'object',
         properties: {
-          name: { type: 'string' },
-          phone: { type: 'string' },
-          department: { type: 'string' },
-          dob: { type: 'string', description: 'Date of birth, YYYY-MM-DD, optional' },
+          specialtyCategory: { type: 'string', description: 'e.g. "Cardiology", "Gynaecology"' },
+          city: { type: 'string' },
+          search: { type: 'string', description: 'Free-text doctor name search' },
         },
-        required: ['name', 'phone', 'department'],
+        required: [],
       },
     },
   },
   {
     type: 'function',
     function: {
-      name: 'check_slot_availability',
-      description: 'Check available appointment slots for a department/doctor/date',
+      name: 'check_doctor_availability',
+      description:
+        'Check whether a specific doctor is working on a given date, and their shift timings. There is no discrete slot list -- a booking is a non-binding preferred time, confirmed by staff later.',
       parameters: {
         type: 'object',
         properties: {
-          department: { type: 'string' },
-          doctorId: { type: 'string', description: 'Optional -- narrows to one doctor' },
+          doctorId: { type: 'string' },
           date: { type: 'string', description: 'YYYY-MM-DD' },
         },
-        required: ['department', 'date'],
+        required: ['doctorId', 'date'],
       },
     },
   },
@@ -46,15 +49,19 @@ export const GROQ_TOOL_SCHEMAS: GroqToolSchema[] = [
     type: 'function',
     function: {
       name: 'book_appointment',
-      description: 'Book a confirmed appointment slot for a patient',
+      description:
+        'Request an appointment for a patient with a specific doctor. Registers the patient as part of the same call -- there is no separate registration step. Non-binding: the hospital confirms the exact time later.',
       parameters: {
         type: 'object',
         properties: {
-          patientId: { type: 'string' },
           doctorId: { type: 'string' },
-          slotId: { type: 'string' },
+          patientName: { type: 'string' },
+          patientMobile: { type: 'string' },
+          preferredDate: { type: 'string', description: 'YYYY-MM-DD' },
+          preferredTime: { type: 'string', description: 'HH:MM, optional -- a preference, not a reservation' },
+          reason: { type: 'string' },
         },
-        required: ['patientId', 'doctorId', 'slotId'],
+        required: ['doctorId', 'patientName', 'patientMobile', 'preferredDate'],
       },
     },
   },
@@ -82,12 +89,21 @@ export async function executeTool(
   assertToolPermission(name, role);
 
   switch (name) {
-    case 'register_patient':
-      return hms.registerPatient(args as { name: string; phone: string; department: string; dob?: string });
-    case 'check_slot_availability':
-      return hms.checkSlotAvailability(args as { department: string; doctorId?: string; date: string });
+    case 'find_doctors':
+      return hms.findDoctors(args as { specialtyCategory?: string; city?: string; search?: string });
+    case 'check_doctor_availability':
+      return hms.checkDoctorAvailability(args as { doctorId: string; date: string });
     case 'book_appointment':
-      return hms.bookAppointment(args as { patientId: string; doctorId: string; slotId: string });
+      return hms.bookAppointment(
+        args as {
+          doctorId: string;
+          patientName: string;
+          patientMobile: string;
+          preferredDate: string;
+          preferredTime?: string;
+          reason?: string;
+        },
+      );
     default:
       throw new UnknownToolError(name);
   }
