@@ -1,0 +1,52 @@
+# Phase 1 production stack — single E2E Networks VM behind Nginx.
+# Deployed by .github/workflows/deploy.yml via SSH; images are pulled from
+# ghcr.io rather than built on the VM. See docs/BUILD_GUIDE.md §7.
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/nginx/tera.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./infra/nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      - gateway
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.11.5
+    volumes:
+      - qdrant-data:/qdrant/storage
+    restart: unless-stopped
+
+  gateway:
+    image: ghcr.io/nexeagle/tera-gateway:latest
+    env_file: .env
+    depends_on:
+      - orchestrator
+    restart: unless-stopped
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  orchestrator:
+    image: ghcr.io/nexeagle/tera-orchestrator:latest
+    env_file: .env
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  audio-preprocess:
+    image: ghcr.io/nexeagle/tera-audio-preprocess:latest
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  qdrant-data:

@@ -1,0 +1,76 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    needs: []
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push gateway
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/gateway/Dockerfile
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/tera-gateway:latest
+
+      - name: Build & push orchestrator
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/orchestrator/Dockerfile
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/tera-orchestrator:latest
+
+      - name: Build & push audio-preprocess
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/audio-preprocess
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/tera-audio-preprocess:latest
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Copy compose + infra files to the E2E VM
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.E2E_VM_HOST }}
+          username: ${{ secrets.E2E_VM_USER }}
+          key: ${{ secrets.E2E_VM_SSH_KEY }}
+          source: "docker-compose.prod.yml,infra/nginx/tera.conf"
+          target: "~/tera-deploy"
+
+      - name: Pull new images and restart the stack
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.E2E_VM_HOST }}
+          username: ${{ secrets.E2E_VM_USER }}
+          key: ${{ secrets.E2E_VM_SSH_KEY }}
+          script: |
+            cd ~/tera-deploy
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            docker compose -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+            docker image prune -f

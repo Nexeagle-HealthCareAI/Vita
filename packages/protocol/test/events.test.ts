@@ -1,0 +1,41 @@
+import { describe, expect, it } from 'vitest';
+import {
+  BinaryFrameType,
+  ServerControlEvent,
+  decodeBinaryFrame,
+  encodeBinaryFrame,
+} from '../src/events.js';
+
+describe('binary frame codec', () => {
+  it('round-trips a PCM16 audio chunk', () => {
+    const payload = new Uint8Array([1, 2, 3, 4, 5]);
+    const frame = encodeBinaryFrame(BinaryFrameType.AUDIO_INPUT_PCM16, payload);
+    const { type, payload: decoded } = decodeBinaryFrame(frame);
+    expect(type).toBe(BinaryFrameType.AUDIO_INPUT_PCM16);
+    expect(Array.from(decoded)).toEqual(Array.from(payload));
+  });
+});
+
+describe('server control event schema', () => {
+  it('accepts a valid TRANSCRIPT event', () => {
+    const parsed = ServerControlEvent.safeParse({
+      event: 'TRANSCRIPT',
+      text: 'patient wants a cardiology slot',
+      is_final: true,
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('accepts a CLEAR_PLAYBACK barge-in event', () => {
+    const parsed = ServerControlEvent.safeParse({
+      event: 'CLEAR_PLAYBACK',
+      reason: 'USER_BARGE_IN',
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('rejects an unknown event name', () => {
+    const parsed = ServerControlEvent.safeParse({ event: 'NOT_A_REAL_EVENT' });
+    expect(parsed.success).toBe(false);
+  });
+});
