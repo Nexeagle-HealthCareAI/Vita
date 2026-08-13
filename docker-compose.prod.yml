@@ -1,24 +1,16 @@
-# Phase 1 stack — one E2E Networks VM behind Nginx, used for BOTH dev and prod
-# deploys (same compose file, different VM + .env per environment -- see
+# Phase 1 stack — one E2E Networks VM, used for BOTH dev and prod deploys (same
+# compose file, different VM + .env per environment -- see
 # .github/workflows/deploy.yml's deploy-dev/deploy-prod jobs). Images are pulled
 # from ghcr.io rather than built on the VM. See docs/BUILD_GUIDE.md §7.
+#
+# No nginx/TLS termination here -- this VM is shared with other EasyHMS
+# services and already runs a reverse proxy in front of it; Vita's domain
+# routing is a site block on that proxy, not something this repo owns.
 #
 # IMAGE_TAG comes from the generated .env (deploy-dev writes "develop", deploy-prod
 # writes "latest") so each environment's VM pulls its own build, not whichever branch
 # happened to push last.
 services:
-  nginx:
-    image: nginx:1.27-alpine
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./infra/nginx/vita.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./infra/nginx/certs:/etc/nginx/certs:ro
-    depends_on:
-      - gateway
-    restart: unless-stopped
-
   redis:
     image: redis:7-alpine
     volumes:
@@ -34,11 +26,10 @@ services:
   gateway:
     image: ghcr.io/nexeagle-healthcareai/vita-gateway:${IMAGE_TAG:-latest}
     env_file: .env
-    # Exposed directly (not just through nginx) so CI's deploy health check can reach
-    # it without depending on TLS certs already being in place on a fresh VM -- nginx's
-    # :443 server block fails to even start without real certs at
-    # infra/nginx/certs/{fullchain,privkey}.pem (see BUILD_GUIDE §4.3), same raw-port
-    # health-check convention used elsewhere in this org (e.g. easyHMSAPI's deploy-api.yml).
+    # Exposed on the host so CI's deploy health check can reach it directly, and
+    # so the VM's shared reverse proxy has a port to route Vita's domain to --
+    # same raw-port health-check convention used elsewhere in this org (e.g.
+    # easyHMSAPI's deploy-api.yml).
     ports:
       - "8080:8080"
     depends_on:

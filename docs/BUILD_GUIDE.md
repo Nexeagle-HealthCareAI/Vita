@@ -51,15 +51,22 @@ git push -u origin main
 on `main` before anyone else pushes — `Settings → Branches → Add rule`.
 
 **Secrets** (`Settings → Secrets and variables → Actions`), needed by
-`.github/workflows/deploy.yml`:
+`.github/workflows/deploy.yml`. Dev and prod are separate VMs (shared with
+the rest of the EasyHMS stack); auth is password-based, matching how
+easyHMSAPI's own `deploy-api.yml` deploys to these same VMs:
 
 | Secret | Value |
 |---|---|
-| `E2E_VM_HOST` | public IP of your E2E Networks VM |
-| `E2E_VM_USER` | SSH user (e.g. `deploy`) |
-| `E2E_VM_SSH_KEY` | private key for that user (generate a dedicated deploy key, not your personal one) |
+| `E2E_VM_USER` | SSH user, shared across dev and prod |
+| `E2E_VM_HOST_DEV` / `E2E_VM_HOST_PROD` | public IP of the dev / prod VM |
+| `E2E_VM_PASSWORD_DEV` / `E2E_VM_PASSWORD_PROD` | SSH password for that VM |
+| `HMS_API_BASE_URL_DEV` / `HMS_API_BASE_URL_PROD` | easyHMSAPI base URL per environment |
+| `HMS_API_KEY`, `JWT_SIGNING_SECRET`, `SARVAM_API_KEY`, `GROQ_API_KEY` | shared across both environments |
 
-`GITHUB_TOKEN` is automatic — used to push images to `ghcr.io`.
+`GITHUB_TOKEN` is automatic — used to push images to `ghcr.io`. The prod VM
+(`E2E_VM_HOST_PROD` / `E2E_VM_PASSWORD_PROD`) doesn't exist yet as of this
+writing — `deploy-prod` is fully wired but will fail at the SSH step until
+it's provisioned and those two secrets are added.
 
 ---
 
@@ -253,17 +260,16 @@ Generate a dedicated deploy SSH keypair (don't reuse your personal key),
 add the public half to `deploy`'s `~/.ssh/authorized_keys`, and put the
 private half into the `E2E_VM_SSH_KEY` GitHub secret from §1.
 
-### 4.3 TLS
+### 4.3 TLS / domain routing
 
-```bash
-certbot certonly --standalone -d gateway.vita.hospital
-cp /etc/letsencrypt/live/gateway.vita.hospital/fullchain.pem infra/nginx/certs/
-cp /etc/letsencrypt/live/gateway.vita.hospital/privkey.pem infra/nginx/certs/
-```
-
-Point your DNS `A` record for `gateway.vita.hospital` at the VM's IP before
-running certbot. Set up a renewal cron (`certbot renew` twice-daily,
-standard practice) — Let's Encrypt certs expire in 90 days.
+This repo doesn't run its own nginx or manage its own certs. The dev/prod VMs
+are shared with the rest of the EasyHMS stack (easyHMSAPI, CMS, etc.) and
+already run a reverse proxy in front of everything on :80/:443 — Vita's
+`gateway` container is just exposed on a host port (`8080`, see
+`docker-compose.prod.yml`) for that existing proxy to route to. Add a site
+block there for Vita's domain pointing at `<vm-ip>:8080`; TLS termination and
+cert renewal are handled wherever the rest of that proxy config already lives,
+not in this repo.
 
 ### 4.4 First deploy
 
@@ -298,7 +304,7 @@ Once traffic justifies it, move off single-VM Compose to E2E's managed
 Kubernetes: containerize is already done (same Dockerfiles), add a Redis
 Sentinel/managed-Redis for HA (closes the gap in
 `docs/ARCHITECTURE.md` item 8), and use `k8s` Ingress + cert-manager in
-place of the Nginx/certbot setup in §4.3. Not required for Phase 1 launch.
+place of the shared-VM reverse proxy in §4.3. Not required for Phase 1 launch.
 
 ---
 

@@ -108,7 +108,7 @@ jobs:
           host: ${{ secrets.E2E_VM_HOST_DEV }}
           username: ${{ secrets.E2E_VM_USER }}
           password: ${{ secrets.E2E_VM_PASSWORD_DEV }}
-          source: "docker-compose.prod.yml,infra/nginx/vita.conf"
+          source: "docker-compose.prod.yml"
           target: "~/vita-deploy"
 
       - name: Write .env, pull, and restart the stack
@@ -189,7 +189,7 @@ jobs:
           host: ${{ secrets.E2E_VM_HOST_PROD }}
           username: ${{ secrets.E2E_VM_USER }}
           password: ${{ secrets.E2E_VM_PASSWORD_PROD }}
-          source: "docker-compose.prod.yml,infra/nginx/vita.conf"
+          source: "docker-compose.prod.yml"
           target: "~/vita-deploy"
 
       - name: Write .env, pull, and restart the stack
