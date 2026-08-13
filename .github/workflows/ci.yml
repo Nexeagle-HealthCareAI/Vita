@@ -39,7 +39,9 @@ jobs:
           cache: pip
           cache-dependency-path: apps/audio-preprocess/requirements.txt
       - run: pip install -r requirements.txt
-      - run: pytest -q
+      # Bare `pytest` doesn't add the cwd to sys.path, so `from app.main import
+      # app` fails with ModuleNotFoundError; `python -m pytest` does add it.
+      - run: python -m pytest -q
 
   web-demo-e2e:
     runs-on: ubuntu-latest
@@ -52,6 +54,10 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # web-sdk imports @vita/protocol's build output, so it must be built first --
+      # unlike the node job, this job calls pnpm directly rather than through turbo,
+      # which is what normally handles that ordering.
+      - run: pnpm --filter @vita/protocol build
       - run: pnpm --filter @vita/web-sdk build
       - run: pnpm --filter @vita/web-demo exec playwright install --with-deps chromium
       - run: pnpm --filter @vita/web-demo test
