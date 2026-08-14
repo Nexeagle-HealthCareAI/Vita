@@ -35,16 +35,20 @@ export interface GroqChatResult {
   toolCalls: ToolCall[];
 }
 
-const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
+const DEFAULT_GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
 export class GroqClient {
   constructor(
     private apiKey: string,
     private fetchImpl: typeof fetch = fetch,
+    // Configurable for the same reason SarvamClient's endpoints already are -- lets
+    // tools/load-test point a real GroqClient at a local mock-vendor stub instead of the
+    // real (paid, non-deterministic) API, without touching pipeline.ts at all.
+    private apiUrl: string = DEFAULT_GROQ_API_URL,
   ) {}
 
   async chat(messages: ChatMessage[], tools: GroqToolSchema[], model: string): Promise<GroqChatResult> {
-    const res = await this.fetchImpl(GROQ_API_URL, {
+    const res = await this.fetchImpl(this.apiUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

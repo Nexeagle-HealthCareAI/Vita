@@ -1,0 +1,98 @@
+[
+  {
+    "file": "book-appointment-clean.wav",
+    "phraseId": "book-appointment",
+    "condition": "clean",
+    "speechStartMs": 140,
+    "speechEndMs": 3480,
+    "cleanReferenceFile": null
+  },
+  {
+    "file": "book-appointment-snr10.wav",
+    "phraseId": "book-appointment",
+    "condition": "snr10",
+    "speechStartMs": 140,
+    "speechEndMs": 3480,
+    "cleanReferenceFile": "book-appointment-clean.wav"
+  },
+  {
+    "file": "book-appointment-snr0.wav",
+    "phraseId": "book-appointment",
+    "condition": "snr0",
+    "speechStartMs": 140,
+    "speechEndMs": 3480,
+    "cleanReferenceFile": "book-appointment-clean.wav"
+  },
+  {
+    "file": "confirm-appointment-clean.wav",
+    "phraseId": "confirm-appointment",
+    "condition": "clean",
+    "speechStartMs": 160,
+    "speechEndMs": 2580,
+    "cleanReferenceFile": null
+  },
+  {
+    "file": "confirm-appointment-snr10.wav",
+    "phraseId": "confirm-appointment",
+    "condition": "snr10",
+    "speechStartMs": 160,
+    "speechEndMs": 2580,
+    "cleanReferenceFile": "confirm-appointment-clean.wav"
+  },
+  {
+    "file": "confirm-appointment-snr0.wav",
+    "phraseId": "confirm-appointment",
+    "condition": "snr0",
+    "speechStartMs": 160,
+    "speechEndMs": 2580,
+    "cleanReferenceFile": "confirm-appointment-clean.wav"
+  },
+  {
+    "file": "doctor-availability-clean.wav",
+    "phraseId": "doctor-availability",
+    "condition": "clean",
+    "speechStartMs": 120,
+    "speechEndMs": 2480,
+    "cleanReferenceFile": null
+  },
+  {
+    "file": "doctor-availability-snr10.wav",
+    "phraseId": "doctor-availability",
+    "condition": "snr10",
+    "speechStartMs": 120,
+    "speechEndMs": 2480,
+    "cleanReferenceFile": "doctor-availability-clean.wav"
+  },
+  {
+    "file": "doctor-availability-snr0.wav",
+    "phraseId": "doctor-availability",
+    "condition": "snr0",
+    "speechStartMs": 120,
+    "speechEndMs": 2480,
+    "cleanReferenceFile": "doctor-availability-clean.wav"
+  },
+  {
+    "file": "reschedule-visit-clean.wav",
+    "phraseId": "reschedule-visit",
+    "condition": "clean",
+    "speechStartMs": 120,
+    "speechEndMs": 2580,
+    "cleanReferenceFile": null
+  },
+  {
+    "file": "reschedule-visit-snr10.wav",
+    "phraseId": "reschedule-visit",
+    "condition": "snr10",
+    "speechStartMs": 120,
+    "speechEndMs": 2580,
+    "cleanReferenceFile": "reschedule-visit-clean.wav"
+  },
+  {
+    "file": "reschedule-visit-snr0.wav",
+    "phraseId": "reschedule-visit",
+    "condition": "snr0",
+    "speechStartMs": 120,
+    "speechEndMs": 2580,
+    "cleanReferenceFile": "reschedule-visit-clean.wav"
+  }
+]

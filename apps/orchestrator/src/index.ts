@@ -27,7 +27,7 @@ export function buildServer(
 ) {
   const redis = redisClient ?? new IORedis(REDIS_URL);
   const sessions = new SessionStore(redis);
-  const groq = clients?.groq ?? new GroqClient(process.env.GROQ_API_KEY ?? '');
+  const groq = clients?.groq ?? new GroqClient(process.env.GROQ_API_KEY ?? '', undefined, process.env.GROQ_API_URL);
   const sarvam =
     clients?.sarvam ??
     new SarvamClient(

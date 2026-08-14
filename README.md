@@ -21,6 +21,8 @@ packages/
   web-sdk/               @vita/web-sdk — the browser client
   mcp-1hms/              MCP server wrapping 1HMS APIs
   rag/                    Hybrid BM25 + dense retrieval over Qdrant
+tools/
+  load-test/             Local full-stack load/throughput harness (dev-only, never deployed)
 infra/
   nginx/                 TLS + WS reverse proxy config for the E2E VM
 .github/workflows/       CI (lint/typecheck/build/test) and CD (deploy to E2E)

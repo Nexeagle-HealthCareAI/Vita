@@ -2,17 +2,31 @@
 (see pyproject.toml's `slow` marker registration and .github/workflows/ci.yml's
 `-m "not slow"` filter). Run manually via `python -m pytest -q -m slow`.
 
-Fixtures here are synthetically generated (numpy tone + white noise) -- explicitly
+Most fixtures here are synthetically generated (numpy tone + white noise) -- explicitly
 NOT real hospital-reception audio. This validates the mechanics (does it load, does it
 run fast enough, does VAD/denoise respond sanely to obviously-loud-vs-silent input,
 does the session-scoped concurrency design hold against the real model) -- it is not a
-real-world accuracy/quality validation.
+real-world accuracy/quality validation (see tests/test_real_audio_fixtures.py for that).
+
+CORRECTNESS NOTE: two tests below originally used a synthetic sine tone as a "speech"
+stand-in. Confirmed empirically (while investigating a real bug test_real_audio_fixtures.py
+found -- see app/denoise.py's module docstring) that the real Silero VAD NEVER classifies
+a sustained sine tone as speech, at any amplitude, regardless of denoising -- it's simply
+not what the model was trained to recognize, unlike an energy-threshold heuristic which
+would happily call any loud sound "speech." Both tests below were passing before only
+because @pytest.mark.slow tests never actually ran in CI or (apparently) locally on this
+machine before this session -- the fallback energy-threshold path was silently being
+exercised instead of the real model, whenever tests ran with the real load() monkeypatched
+out. They're fixed here to use real speech (this file's own tests/fixtures/*.wav, shared
+with test_real_audio_fixtures.py) instead of a tone.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
+import wave
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -23,6 +37,8 @@ from app.vad import SileroVAD
 
 FRAME_SAMPLES = 320  # 20ms @ 16kHz, this system's native frame size
 SAMPLE_RATE = 16000
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
 
 pytestmark = pytest.mark.slow
 
@@ -43,22 +59,28 @@ def _noise_only_frame(rng: np.random.Generator) -> np.ndarray:
     return np.clip(noise * 32767, -32768, 32767).astype(np.int16)
 
 
-@pytest.fixture(scope="module")
-def loaded_vad() -> SileroVAD:
-    vad = SileroVAD()
-    vad.load()
-    return vad
+def _real_speech_frames(file_name: str, start_frame: int, count: int) -> list[np.ndarray]:
+    """Loads a slice of real frames from one of tests/fixtures/'s WAVs -- see that
+    directory's manifest.json for exactly which portion of each file is real speech
+    vs. leading/trailing silence padding."""
+    with wave.open(str(FIXTURES_DIR / file_name), "rb") as wf:
+        assert wf.getframerate() == SAMPLE_RATE
+        raw = wf.readframes(wf.getnframes())
+    samples = np.frombuffer(raw, dtype=np.int16)
+    frames = []
+    for i in range(start_frame, start_frame + count):
+        frame = samples[i * FRAME_SAMPLES : (i + 1) * FRAME_SAMPLES]
+        if len(frame) < FRAME_SAMPLES:
+            break
+        frames.append(frame)
+    return frames
 
 
-@pytest.fixture(scope="module")
-def loaded_denoiser() -> Denoiser:
-    denoiser = Denoiser()
-    denoiser.load()
-    return denoiser
+# loaded_vad / loaded_denoiser fixtures live in conftest.py now, shared with
+# test_real_audio_fixtures.py.
 
 
-def test_vad_sanity_silence_vs_tone(loaded_vad: SileroVAD):
-    rng = np.random.default_rng(42)
+def test_vad_sanity_silence_vs_real_speech(loaded_vad: SileroVAD):
     state = loaded_vad.new_session_state()
 
     silence_decisions = []
@@ -67,12 +89,17 @@ def test_vad_sanity_silence_vs_tone(loaded_vad: SileroVAD):
         silence_decisions.append(decision)
     assert sum(silence_decisions) <= 2, "silence should mostly not be flagged as speech"
 
-    tone_decisions = []
-    for i in range(30):
-        frame = _tone_with_noise_frame(rng, i * FRAME_SAMPLES / SAMPLE_RATE)
+    # book-appointment-clean.wav, frames 8-38: solidly inside its known speech region
+    # (manifest.json: speechStartMs=140/frame 7 -- start one frame in for margin), no
+    # denoising applied here (this test is VAD-only, matching test_vad_latency_budget's
+    # scope below) so this is checking VAD's own behavior on a real (not denoised) signal.
+    speech_frames = _real_speech_frames("book-appointment-clean.wav", start_frame=8, count=30)
+    speech_decisions = []
+    for frame in speech_frames:
         decision, state = loaded_vad.is_speech(frame, state)
-        tone_decisions.append(decision)
-    assert sum(tone_decisions) >= 20, "a sustained tone should mostly be flagged as speech"
+        speech_decisions.append(decision)
+    ratio = sum(speech_decisions) / len(speech_decisions)
+    assert ratio >= 0.5, f"real speech should mostly be flagged as speech (got {ratio:.0%})"
 
 
 def test_vad_latency_budget(loaded_vad: SileroVAD):
@@ -140,22 +167,30 @@ def test_concurrent_sessions_never_cross_talk(loaded_vad: SileroVAD, loaded_deno
             decision, record.vad_state = loaded_vad.is_speech(denoised, record.vad_state)
             return decision
 
-    async def run_session(session_id: str, seed: int) -> list[bool]:
-        rng = np.random.default_rng(seed)
+    async def run_session(session_id: str, file_name: str) -> list[bool]:
         record = await registry.get_or_create(session_id)
         decisions = []
-        for i in range(40):
-            frame = _tone_with_noise_frame(rng, i * FRAME_SAMPLES / SAMPLE_RATE)
+        for frame in _real_speech_frames(file_name, start_frame=8, count=40):
             decisions.append(await asyncio.to_thread(process_frame_sync, record, frame))
         return decisions
 
     async def main() -> tuple[list[bool], list[bool]]:
-        return await asyncio.gather(run_session("sess-a", 1), run_session("sess-b", 2))
+        # Two DIFFERENT real fixtures per session -- if state ever leaked between them
+        # (the exact bug this test exists to catch), the two decision sequences would
+        # stop reflecting their own distinct audio.
+        return await asyncio.gather(
+            run_session("sess-a", "doctor-availability-clean.wav"),
+            run_session("sess-b", "reschedule-visit-clean.wav"),
+        )
 
     decisions_a, decisions_b = asyncio.run(main())
 
     assert registry.session_count() == 2
-    # Both sessions saw sustained tone throughout -- neither should come back looking
-    # like it was corrupted by the other (e.g. all-False from a torn state read).
-    assert sum(decisions_a) >= 20
-    assert sum(decisions_b) >= 20
+    # Modest bar (not a strict accuracy check -- that's test_real_audio_fixtures.py's
+    # job): both sessions saw real speech throughout this slice, so neither should come
+    # back looking totally corrupted (e.g. all-False from a torn/cross-contaminated
+    # state read). Real measured ratios for this exact slice-plus-denoise-plus-VAD
+    # combination are ~0.23-0.33; 0.1 leaves comfortable margin while still failing hard
+    # on genuine corruption (an all-False sequence from state cross-talk would be 0.0).
+    assert sum(decisions_a) / len(decisions_a) >= 0.1, decisions_a
+    assert sum(decisions_b) / len(decisions_b) >= 0.1, decisions_b

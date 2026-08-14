@@ -4,6 +4,10 @@ on:
   pull_request:
   push:
     branches: [develop, main]
+  # Lets a maintainer manually run the real-model audio-preprocess suite (see the
+  # audio-preprocess-slow job below) on demand, without needing local Python/torch/Rust
+  # setup -- never fires on its own, never blocks a PR.
+  workflow_dispatch:
 
 jobs:
   node:
@@ -45,6 +49,27 @@ jobs:
       # weights (Silero VAD, DeepFilterNet) -- kept out of the default CI gate per
       # docs/BUILD_GUIDE.md §3.4; run manually via `python -m pytest -q -m slow`.
       - run: python -m pytest -q -m "not slow"
+
+  # Real Silero VAD + DeepFilterNet weights against real (TTS-synthesized) speech
+  # fixtures -- manual-only (see the workflow_dispatch trigger above), never blocks a
+  # PR. Deliberately NOT added to the `audio-preprocess` job above: real model loading
+  # is meaningfully slower and needs a real torch.hub network fetch, matching the
+  # already-established `-m "not slow"` boundary this repeats rather than reconsiders.
+  audio-preprocess-slow:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/audio-preprocess
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: apps/audio-preprocess/requirements.txt
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q -m slow
 
   web-demo-e2e:
     runs-on: ubuntu-latest

@@ -68,4 +68,12 @@ describe('GroqClient', () => {
     const client = new GroqClient('key', fetchImpl);
     await expect(client.chat([{ role: 'user', content: 'hi' }], [], 'llama-3.1-8b-instant')).rejects.toThrow(/429/);
   });
+
+  it('posts to a custom apiUrl when one is provided, instead of the real Groq endpoint', async () => {
+    const fetchImpl = fakeFetch({ choices: [{ message: { content: 'ok' } }] });
+    const client = new GroqClient('key', fetchImpl, 'http://localhost:9999/groq/chat/completions');
+    await client.chat([{ role: 'user', content: 'hi' }], [], 'llama-3.1-8b-instant');
+
+    expect(fetchImpl).toHaveBeenCalledWith('http://localhost:9999/groq/chat/completions', expect.any(Object));
+  });
 });
