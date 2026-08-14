@@ -18,6 +18,7 @@ function fakeAudioPreprocess() {
   // relay.test.ts's job; this integration test only proves index.ts's wiring end to end.
   let calls = 0;
   client.process = vi.fn(async (frame: Uint8Array) => ({ frame, speechDetected: calls++ < 4 }));
+  client.teardown = vi.fn().mockResolvedValue(undefined);
   return client;
 }
 

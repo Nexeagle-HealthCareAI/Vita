@@ -41,7 +41,10 @@ jobs:
       - run: pip install -r requirements.txt
       # Bare `pytest` doesn't add the cwd to sys.path, so `from app.main import
       # app` fails with ModuleNotFoundError; `python -m pytest` does add it.
-      - run: python -m pytest -q
+      # `-m "not slow"` skips tests/test_models_integration.py, which loads real model
+      # weights (Silero VAD, DeepFilterNet) -- kept out of the default CI gate per
+      # docs/BUILD_GUIDE.md §3.4; run manually via `python -m pytest -q -m slow`.
+      - run: python -m pytest -q -m "not slow"
 
   web-demo-e2e:
     runs-on: ubuntu-latest

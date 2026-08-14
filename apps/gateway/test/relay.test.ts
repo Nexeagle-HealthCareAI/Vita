@@ -9,6 +9,7 @@ const CLAIMS: SessionClaims = { sub: 'user-1', role: 'ROLE_RECEPTIONIST' };
 function fakeAudioPreprocess() {
   const client = Object.create(AudioPreprocessClient.prototype) as AudioPreprocessClient;
   client.process = vi.fn();
+  client.teardown = vi.fn().mockResolvedValue(undefined);
   return client;
 }
 
@@ -77,6 +78,18 @@ describe('ConnectionRelay', () => {
 
     const events = jsonSends(sent);
     expect(events[0]).toEqual({ event: 'STATE_CHANGE', state: 'PROCESSING' });
+  });
+
+  it('threads the session id into every audioPreprocess.process call, not just the orchestrator call', async () => {
+    const audioPreprocess = fakeAudioPreprocess();
+    const orchestrator = fakeOrchestrator();
+    const relay = new ConnectionRelay({ audioPreprocess, orchestrator, claims: CLAIMS, send: () => {} });
+    await relay.start();
+
+    (audioPreprocess.process as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ frame: frame(1), speechDetected: false });
+    await sendFrame(relay, frame(1));
+
+    expect(audioPreprocess.process).toHaveBeenCalledWith(expect.any(Uint8Array), 'sess-1');
   });
 
   it('a sub-threshold speech blip never arms, so silence afterward never ends an utterance', async () => {
@@ -360,6 +373,44 @@ describe('ConnectionRelay', () => {
       await vi.advanceTimersByTimeAsync(100);
       await sendFrame(relay, frame(99));
       expect((audioPreprocess.process as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsAtSpeaking);
+    });
+  });
+
+  describe('close() / audio-preprocess teardown', () => {
+    it('calls teardown(sessionId) exactly once when the session was established', async () => {
+      const audioPreprocess = fakeAudioPreprocess();
+      const orchestrator = fakeOrchestrator();
+      const relay = new ConnectionRelay({ audioPreprocess, orchestrator, claims: CLAIMS, send: () => {} });
+      await relay.start();
+
+      relay.close();
+
+      expect(audioPreprocess.teardown).toHaveBeenCalledTimes(1);
+      expect(audioPreprocess.teardown).toHaveBeenCalledWith('sess-1');
+    });
+
+    it('does not call teardown if the session was never established (bootstrap failure)', async () => {
+      const audioPreprocess = fakeAudioPreprocess();
+      const orchestrator = fakeOrchestrator();
+      orchestrator.createSession = vi.fn().mockResolvedValue(null); // start() fails
+      const relay = new ConnectionRelay({ audioPreprocess, orchestrator, claims: CLAIMS, send: () => {} });
+      await relay.start();
+
+      relay.close();
+
+      expect(audioPreprocess.teardown).not.toHaveBeenCalled();
+    });
+
+    it('does not call teardown twice if close() is somehow invoked more than once', async () => {
+      const audioPreprocess = fakeAudioPreprocess();
+      const orchestrator = fakeOrchestrator();
+      const relay = new ConnectionRelay({ audioPreprocess, orchestrator, claims: CLAIMS, send: () => {} });
+      await relay.start();
+
+      relay.close();
+      relay.close();
+
+      expect(audioPreprocess.teardown).toHaveBeenCalledTimes(1);
     });
   });
 });

@@ -107,6 +107,15 @@ export class ConnectionRelay {
 
   close(): void {
     if (this.bargeInTimer) clearTimeout(this.bargeInTimer);
+    if (this.sessionId) {
+      // Fire-and-forget, same pattern as start()'s call below -- frees this session's
+      // model state in audio-preprocess promptly rather than waiting out its TTL
+      // safety net. Capture the id before clearing it.
+      const sessionId = this.sessionId;
+      void this.deps.audioPreprocess.teardown(sessionId).catch((err) => {
+        this.deps.log?.warn({ err }, 'relay: audio-preprocess teardown failed');
+      });
+    }
     this.sessionId = null;
   }
 
@@ -126,7 +135,7 @@ export class ConnectionRelay {
   }
 
   private async processListeningFrame(frame: Uint8Array): Promise<void> {
-    const { frame: denoised, speechDetected } = await this.deps.audioPreprocess.process(frame);
+    const { frame: denoised, speechDetected } = await this.deps.audioPreprocess.process(frame, this.sessionId!);
 
     if (!this.accumulating) {
       if (!speechDetected) {
@@ -170,7 +179,7 @@ export class ConnectionRelay {
   private async processSpeakingFrame(frame: Uint8Array): Promise<void> {
     if (!this.config.bargeInEnabled || !this.bargeInArmed) return;
 
-    const { speechDetected } = await this.deps.audioPreprocess.process(frame);
+    const { speechDetected } = await this.deps.audioPreprocess.process(frame, this.sessionId!);
     if (speechDetected) {
       this.speechRunMs += this.config.frameMs;
     } else {

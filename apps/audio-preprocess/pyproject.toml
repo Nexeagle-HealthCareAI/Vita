@@ -1,0 +1,4 @@
+[tool.pytest.ini_options]
+markers = [
+    "slow: loads real model weights against synthetic fixtures; excluded from default CI (see docs/BUILD_GUIDE.md §3.4)",
+]
