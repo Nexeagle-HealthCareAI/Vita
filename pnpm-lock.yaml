@@ -75,6 +75,9 @@ importers:
 
   apps/orchestrator:
     dependencies:
+      '@fastify/websocket':
+        specifier: ^11.0.1
+        version: 11.3.0
       '@vita/mcp-1hms':
         specifier: workspace:*
         version: link:../../packages/mcp-1hms
@@ -87,10 +90,16 @@ importers:
       ioredis:
         specifier: ^5.4.1
         version: 5.11.1
+      ws:
+        specifier: ^8.18.0
+        version: 8.21.3
     devDependencies:
       '@types/node':
         specifier: ^22.7.5
         version: 22.20.1
+      '@types/ws':
+        specifier: ^8.5.12
+        version: 8.18.1
       ioredis-mock:
         specifier: ^8.9.0
         version: 8.13.1(@types/ioredis-mock@8.2.8(ioredis@5.11.1))(ioredis@5.11.1)

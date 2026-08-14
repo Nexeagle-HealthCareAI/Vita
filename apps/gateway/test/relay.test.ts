@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { AudioPreprocessClient } from '../src/audioPreprocessClient.js';
 import { OrchestratorClient, type TurnAudioResponse } from '../src/orchestratorClient.js';
 import { ConnectionRelay, type RelayConfig } from '../src/relay.js';
+import { BatchTurnBackend, type TurnBackend, type TurnBackendEvents, type TurnBackendFactory } from '../src/turnBackend.js';
 import type { SessionClaims } from '../src/ticket.js';
 
 const CLAIMS: SessionClaims = { sub: 'user-1', role: 'ROLE_RECEPTIONIST' };
@@ -20,6 +21,26 @@ function fakeOrchestrator(turnResult?: TurnAudioResponse) {
     turnResult ?? { ok: true, data: { transcript: '', replyText: null, audioBase64: null, toolCallsExecuted: [] } },
   );
   return client;
+}
+
+/** Wires a real BatchTurnBackend (today's exact production fallback behavior, see
+ * turnBackend.ts) around whichever fakeOrchestrator() a test constructs, instead of a
+ * bespoke test-only double -- so these tests keep exercising the real
+ * ConnectionRelay<->TurnBackend integration, not a re-implementation of it. Each created
+ * backend's beginUtterance/endUtterance/close are spied so tests can assert on the
+ * Strategy-split boundary itself (e.g. "a sub-threshold blip never opens a backend"),
+ * not just on the orchestrator calls one layer down. */
+function fakeBackendFactory(orchestrator: OrchestratorClient) {
+  const backends: TurnBackend[] = [];
+  const create = vi.fn((sessionId: string, events: TurnBackendEvents): Promise<TurnBackend> => {
+    const backend = new BatchTurnBackend(orchestrator, sessionId, events);
+    vi.spyOn(backend, 'beginUtterance');
+    vi.spyOn(backend, 'endUtterance');
+    vi.spyOn(backend, 'close');
+    backends.push(backend);
+    return Promise.resolve(backend);
+  });
+  return { create, backends } satisfies TurnBackendFactory & { create: Mock; backends: TurnBackend[] };
 }
 
 function frame(marker: number) {
@@ -54,7 +75,7 @@ describe('ConnectionRelay', () => {
     const orchestrator = fakeOrchestrator();
     const sent: (string | Uint8Array)[] = [];
     const relay = new ConnectionRelay(
-      { audioPreprocess, orchestrator, claims: CLAIMS, send: (d) => sent.push(d) },
+      { audioPreprocess, orchestrator, backendFactory: fakeBackendFactory(orchestrator), claims: CLAIMS, send: (d) => sent.push(d) },
       { minUtteranceSpeechMs: 40, silenceHangoverMs: 40, preRollFrames: 2 },
     );
     await relay.start();
@@ -83,7 +104,7 @@ describe('ConnectionRelay', () => {
   it('threads the session id into every audioPreprocess.process call, not just the orchestrator call', async () => {
     const audioPreprocess = fakeAudioPreprocess();
     const orchestrator = fakeOrchestrator();
-    const relay = new ConnectionRelay({ audioPreprocess, orchestrator, claims: CLAIMS, send: () => {} });
+    const relay = new ConnectionRelay({ audioPreprocess, orchestrator, backendFactory: fakeBackendFactory(orchestrator), claims: CLAIMS, send: () => {} });
     await relay.start();
 
     (audioPreprocess.process as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ frame: frame(1), speechDetected: false });
@@ -95,8 +116,9 @@ describe('ConnectionRelay', () => {
   it('a sub-threshold speech blip never arms, so silence afterward never ends an utterance', async () => {
     const audioPreprocess = fakeAudioPreprocess();
     const orchestrator = fakeOrchestrator();
+    const backendFactory = fakeBackendFactory(orchestrator);
     const relay = new ConnectionRelay(
-      { audioPreprocess, orchestrator, claims: CLAIMS, send: () => {} },
+      { audioPreprocess, orchestrator, backendFactory, claims: CLAIMS, send: () => {} },
       { minUtteranceSpeechMs: 40, silenceHangoverMs: 40 },
     );
     await relay.start();
@@ -112,13 +134,18 @@ describe('ConnectionRelay', () => {
     }
 
     expect(orchestrator.postAudioTurn).not.toHaveBeenCalled();
+    // The Strategy-split boundary itself: a sub-threshold blip must never reach
+    // TurnBackend.beginUtterance() (which is what would open a real Sarvam connection in
+    // StreamingTurnBackend) -- start() still calls create() once per call regardless.
+    expect(backendFactory.create).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(backendFactory.backends[0].beginUtterance)).not.toHaveBeenCalled();
   });
 
   it('maxUtteranceMs force-flushes a stuck buffer even while unarmed, then starts a fresh utterance', async () => {
     const audioPreprocess = fakeAudioPreprocess();
     const orchestrator = fakeOrchestrator();
     const relay = new ConnectionRelay(
-      { audioPreprocess, orchestrator, claims: CLAIMS, send: () => {} },
+      { audioPreprocess, orchestrator, backendFactory: fakeBackendFactory(orchestrator), claims: CLAIMS, send: () => {} },
       { minUtteranceSpeechMs: 10_000, maxUtteranceMs: 60 }, // never arms via the normal path
     );
     await relay.start();
@@ -148,7 +175,7 @@ describe('ConnectionRelay', () => {
 
     const sent: (string | Uint8Array)[] = [];
     const relay = new ConnectionRelay(
-      { audioPreprocess, orchestrator, claims: CLAIMS, send: (d) => sent.push(d) },
+      { audioPreprocess, orchestrator, backendFactory: fakeBackendFactory(orchestrator), claims: CLAIMS, send: (d) => sent.push(d) },
       { minUtteranceSpeechMs: 20, silenceHangoverMs: 20 },
     );
     await relay.start();
@@ -184,7 +211,7 @@ describe('ConnectionRelay', () => {
 
     const sent: (string | Uint8Array)[] = [];
     const relay = new ConnectionRelay(
-      { audioPreprocess, orchestrator, claims: CLAIMS, send: (d) => sent.push(d) },
+      { audioPreprocess, orchestrator, backendFactory: fakeBackendFactory(orchestrator), claims: CLAIMS, send: (d) => sent.push(d) },
       { minUtteranceSpeechMs: 20, maxUtteranceMs: 20 },
     );
     await relay.start();
@@ -206,7 +233,7 @@ describe('ConnectionRelay', () => {
 
     const sent: (string | Uint8Array)[] = [];
     const relay = new ConnectionRelay(
-      { audioPreprocess, orchestrator, claims: CLAIMS, send: (d) => sent.push(d) },
+      { audioPreprocess, orchestrator, backendFactory: fakeBackendFactory(orchestrator), claims: CLAIMS, send: (d) => sent.push(d) },
       { minUtteranceSpeechMs: 20, maxUtteranceMs: 20 },
     );
     await relay.start();
@@ -236,7 +263,7 @@ describe('ConnectionRelay', () => {
 
     const sent: (string | Uint8Array)[] = [];
     const relay = new ConnectionRelay(
-      { audioPreprocess, orchestrator, claims: CLAIMS, send: (d) => sent.push(d) },
+      { audioPreprocess, orchestrator, backendFactory: fakeBackendFactory(orchestrator), claims: CLAIMS, send: (d) => sent.push(d) },
       { minUtteranceSpeechMs: 20, maxUtteranceMs: 20 },
     );
     await relay.start();
@@ -265,7 +292,7 @@ describe('ConnectionRelay', () => {
     (audioPreprocess.process as ReturnType<typeof vi.fn>).mockResolvedValue({ frame: frame(1), speechDetected: true });
 
     const relay = new ConnectionRelay(
-      { audioPreprocess, orchestrator, claims: CLAIMS, send: () => {} },
+      { audioPreprocess, orchestrator, backendFactory: fakeBackendFactory(orchestrator), claims: CLAIMS, send: () => {} },
       { minUtteranceSpeechMs: 20, maxUtteranceMs: 20 },
     );
     await relay.start();
@@ -292,7 +319,10 @@ describe('ConnectionRelay', () => {
         ok: true,
         data: { transcript: 'hi', replyText: 'hello', audioBase64: Buffer.from(audio).toString('base64'), toolCallsExecuted: [] },
       });
-      const relay = new ConnectionRelay({ audioPreprocess, orchestrator, claims: CLAIMS, send: (d) => sent.push(d) }, CONFIG);
+      const relay = new ConnectionRelay(
+        { audioPreprocess, orchestrator, backendFactory: fakeBackendFactory(orchestrator), claims: CLAIMS, send: (d) => sent.push(d) },
+        CONFIG,
+      );
       await relay.start();
 
       (audioPreprocess.process as ReturnType<typeof vi.fn>)
@@ -356,7 +386,7 @@ describe('ConnectionRelay', () => {
       });
       const sent: (string | Uint8Array)[] = [];
       const relay = new ConnectionRelay(
-        { audioPreprocess, orchestrator, claims: CLAIMS, send: (d) => sent.push(d) },
+        { audioPreprocess, orchestrator, backendFactory: fakeBackendFactory(orchestrator), claims: CLAIMS, send: (d) => sent.push(d) },
         { ...CONFIG, bargeInEnabled: false },
       );
       await relay.start();
@@ -377,40 +407,46 @@ describe('ConnectionRelay', () => {
   });
 
   describe('close() / audio-preprocess teardown', () => {
-    it('calls teardown(sessionId) exactly once when the session was established', async () => {
+    it('calls teardown(sessionId) and backend.close() exactly once when the session was established', async () => {
       const audioPreprocess = fakeAudioPreprocess();
       const orchestrator = fakeOrchestrator();
-      const relay = new ConnectionRelay({ audioPreprocess, orchestrator, claims: CLAIMS, send: () => {} });
+      const backendFactory = fakeBackendFactory(orchestrator);
+      const relay = new ConnectionRelay({ audioPreprocess, orchestrator, backendFactory, claims: CLAIMS, send: () => {} });
       await relay.start();
 
       relay.close();
 
       expect(audioPreprocess.teardown).toHaveBeenCalledTimes(1);
       expect(audioPreprocess.teardown).toHaveBeenCalledWith('sess-1');
+      expect(vi.mocked(backendFactory.backends[0].close)).toHaveBeenCalledTimes(1);
     });
 
-    it('does not call teardown if the session was never established (bootstrap failure)', async () => {
+    it('does not call teardown or ever create a backend if the session was never established (bootstrap failure)', async () => {
       const audioPreprocess = fakeAudioPreprocess();
       const orchestrator = fakeOrchestrator();
       orchestrator.createSession = vi.fn().mockResolvedValue(null); // start() fails
-      const relay = new ConnectionRelay({ audioPreprocess, orchestrator, claims: CLAIMS, send: () => {} });
+      const backendFactory = fakeBackendFactory(orchestrator);
+      const relay = new ConnectionRelay({ audioPreprocess, orchestrator, backendFactory, claims: CLAIMS, send: () => {} });
       await relay.start();
 
       relay.close();
 
       expect(audioPreprocess.teardown).not.toHaveBeenCalled();
+      expect(backendFactory.create).not.toHaveBeenCalled();
     });
 
-    it('does not call teardown twice if close() is somehow invoked more than once', async () => {
+    it('does not call teardown or backend.close() twice if close() is somehow invoked more than once', async () => {
       const audioPreprocess = fakeAudioPreprocess();
       const orchestrator = fakeOrchestrator();
-      const relay = new ConnectionRelay({ audioPreprocess, orchestrator, claims: CLAIMS, send: () => {} });
+      const backendFactory = fakeBackendFactory(orchestrator);
+      const relay = new ConnectionRelay({ audioPreprocess, orchestrator, backendFactory, claims: CLAIMS, send: () => {} });
       await relay.start();
 
       relay.close();
       relay.close();
 
       expect(audioPreprocess.teardown).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(backendFactory.backends[0].close)).toHaveBeenCalledTimes(1);
     });
   });
 });

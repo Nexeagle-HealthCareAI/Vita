@@ -5,10 +5,19 @@ import { redeemTicket, verifyJwtAndIssueTicket } from './ticket.js';
 import { AudioPreprocessClient } from './audioPreprocessClient.js';
 import { OrchestratorClient } from './orchestratorClient.js';
 import { ConnectionRelay, type RelayConfig } from './relay.js';
+import type { TurnBackendFactory } from './turnBackend.js';
+import { DefaultTurnBackendFactory, OrchestratorStreamClient } from './streamingTurnBackend.js';
 
 const JWT_SECRET = process.env.JWT_SIGNING_SECRET ?? 'change-me';
 const PORT = Number(process.env.GATEWAY_PORT ?? 8080);
 const TICKET_PROTOCOL_PREFIXES = ['vita-ticket.', 'tera-ticket.'] as const;
+
+// Real-time streaming STT is opt-in and OFF by default (Phase 1) -- see the streaming
+// STT plan's rollout section. Ships dark until validated against a real Sarvam key in
+// staging; every call falls back to the existing, already-proven batch path regardless.
+function deriveWsUrl(httpUrl: string): string {
+  return httpUrl.replace(/^http/, 'ws');
+}
 
 // Read fresh per buildServer() call (not at module top-level) so tests can override via
 // process.env before constructing the server, same as AUDIO_PREPROCESS_URL/
@@ -34,11 +43,21 @@ export function extractTicketProtocol(protocols: string[]): string | undefined {
   return prefix ? ticketProtocol.slice(prefix.length) : undefined;
 }
 
-export function buildServer(deps?: { audioPreprocess?: AudioPreprocessClient; orchestrator?: OrchestratorClient }) {
+export function buildServer(deps?: {
+  audioPreprocess?: AudioPreprocessClient;
+  orchestrator?: OrchestratorClient;
+  backendFactory?: TurnBackendFactory;
+}) {
+  const orchestratorHttpUrl = process.env.ORCHESTRATOR_INTERNAL_URL ?? 'http://localhost:8081';
   const audioPreprocess =
     deps?.audioPreprocess ?? new AudioPreprocessClient(process.env.AUDIO_PREPROCESS_URL ?? 'http://localhost:8090');
-  const orchestrator =
-    deps?.orchestrator ?? new OrchestratorClient(process.env.ORCHESTRATOR_INTERNAL_URL ?? 'http://localhost:8081');
+  const orchestrator = deps?.orchestrator ?? new OrchestratorClient(orchestratorHttpUrl);
+  const backendFactory =
+    deps?.backendFactory ??
+    new DefaultTurnBackendFactory(orchestrator, () => new OrchestratorStreamClient(deriveWsUrl(orchestratorHttpUrl)), {
+      streamingEnabled: process.env.STREAMING_STT_ENABLED === 'true',
+      connectTimeoutMs: Number(process.env.STREAM_CONNECT_TIMEOUT_MS ?? 3000),
+    });
   const relayConfig = relayConfigFromEnv();
 
   const app = Fastify({ logger: true });
@@ -80,12 +99,14 @@ export function buildServer(deps?: { audioPreprocess?: AudioPreprocessClient; or
 
       // apps/gateway/src/relay.ts owns VAD-based utterance segmentation and the
       // LISTENING/PROCESSING/SPEAKING lifecycle for this connection; it calls out to
-      // audio-preprocess (per frame) and the orchestrator (once per utterance) over
-      // plain HTTP rather than a second WS -- see the relay plan for why.
+      // audio-preprocess per frame regardless, and to the orchestrator via whichever
+      // TurnBackend backendFactory hands it -- real-time streaming over a persistent WS
+      // when STREAMING_STT_ENABLED, else the batch HTTP path, decided once per call.
       const relay = new ConnectionRelay(
         {
           audioPreprocess,
           orchestrator,
+          backendFactory,
           claims,
           send: (data) => socket.send(data),
           log: req.log,

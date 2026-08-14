@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import websocketPlugin from '@fastify/websocket';
 import { Redis as IORedis, type Redis } from 'ioredis';
 import { HmsClient } from '@vita/mcp-1hms';
 import { SessionStore } from './session.js';
@@ -7,13 +8,22 @@ import { recordAuditEvent } from './audit.js';
 import { GroqClient } from './groq.js';
 import { SarvamClient } from './sarvam.js';
 import { runTurn } from './pipeline.js';
+import { StreamSessionHandler } from './streamSession.js';
+import { ConnectionOpenGate } from './connectionGate.js';
+import { SarvamRealtimeSession, buildSarvamRealtimeUrl } from './sarvamRealtime.js';
 
 const PORT = Number(process.env.ORCHESTRATOR_PORT ?? 8081);
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 
 export function buildServer(
   redisClient?: Redis,
-  clients?: { groq?: GroqClient; sarvam?: SarvamClient; hms?: HmsClient },
+  clients?: {
+    groq?: GroqClient;
+    sarvam?: SarvamClient;
+    hms?: HmsClient;
+    sarvamRealtimeFactory?: () => SarvamRealtimeSession;
+    connectionGate?: ConnectionOpenGate;
+  },
 ) {
   const redis = redisClient ?? new IORedis(REDIS_URL);
   const sessions = new SessionStore(redis);
@@ -28,9 +38,32 @@ export function buildServer(
   const hms =
     clients?.hms ??
     new HmsClient(process.env.HMS_API_BASE_URL ?? 'http://localhost:5000', process.env.HMS_API_KEY ?? '');
+  // Real-time streaming STT (apps/gateway/src/streamingTurnBackend.ts's counterpart) -- one
+  // Sarvam realtime WS session per call, gated by connectionGate to stagger connection-open
+  // bursts (Sarvam's rate limiter is burst-sensitive, not a static ceiling -- see
+  // connectionGate.ts). The gateway's STREAMING_STT_ENABLED is the single source of truth for
+  // whether this ever gets exercised; this route is harmless to register unconditionally.
+  const sarvamRealtimeFactory =
+    clients?.sarvamRealtimeFactory ??
+    (() =>
+      new SarvamRealtimeSession(
+        buildSarvamRealtimeUrl({
+          baseUrl: process.env.SARVAM_STT_REALTIME_URL ?? 'wss://api.sarvam.ai/speech-to-text-realtime/ws',
+          languageCode: process.env.SARVAM_STT_LANGUAGE_CODE ?? 'en-IN',
+          streamType: process.env.SARVAM_STT_STREAM_TYPE ?? 'fast',
+        }),
+        process.env.SARVAM_API_KEY ?? '',
+      ));
+  const connectionGate =
+    clients?.connectionGate ??
+    new ConnectionOpenGate(
+      Number(process.env.SARVAM_CONNECT_BURST_CAPACITY ?? 3),
+      Number(process.env.SARVAM_CONNECT_REFILL_MS ?? 250),
+    );
   // bodyLimit default (1MB) comfortably covers a raw-audio turn (worst case ~625KB at the
   // gateway relay's 20s max-utterance cap) but is bumped for headroom -- see /turn/audio below.
   const app = Fastify({ logger: true, bodyLimit: 2 * 1024 * 1024 });
+  app.register(websocketPlugin);
 
   // The gateway relay posts one utterance's raw PCM16 audio per turn (see
   // /session/:id/turn/audio below) -- Fastify has no default parser for this content type
@@ -194,6 +227,41 @@ export function buildServer(
       replyText: result.replyText,
       audioBase64: Buffer.from(result.audio).toString('base64'),
       toolCallsExecuted: result.toolCallsExecuted,
+    });
+  });
+
+  // Real-time counterpart to /session/:id/turn/audio above -- the gateway's
+  // StreamingTurnBackend opens this once per call (not per utterance) and forwards frames
+  // continuously instead of buffering a whole utterance first. See streamSession.ts for the
+  // per-call orchestration this thin route delegates to.
+  app.register(async (instance) => {
+    instance.get('/session/:id/stream', { websocket: true }, (socket, req) => {
+      const { id } = req.params as { id: string };
+
+      void (async () => {
+        const session = await sessions.get(id);
+        if (!session) {
+          socket.close(4004, 'session not found');
+          return;
+        }
+
+        const handler = new StreamSessionHandler(id, socket, {
+          sessions,
+          groq,
+          sarvamBatch: sarvam,
+          hms,
+          sarvamRealtimeFactory,
+          connectionGate,
+          connectTimeoutMs: Number(process.env.SARVAM_CONNECT_TIMEOUT_MS ?? 1800),
+          gateMaxWaitMs: Number(process.env.SARVAM_CONNECT_GATE_MAX_WAIT_MS ?? 1000),
+          log: req.log,
+        });
+
+        socket.on('message', (data: Buffer, isBinary: boolean) => handler.handleMessage(data, isBinary));
+        socket.on('close', () => handler.onClose());
+
+        await handler.init();
+      })();
     });
   });
 
