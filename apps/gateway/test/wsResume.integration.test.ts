@@ -50,10 +50,24 @@ async function mintTicket(app: ReturnType<typeof buildServer>, resume?: { resume
 
 describe('gateway WS resume -- reconnecting into the same orchestrator session', () => {
   let app: ReturnType<typeof buildServer> | undefined;
+  let audioPreprocess: ReturnType<typeof fakeAudioPreprocess> | undefined;
   const sockets: WebSocket[] = [];
 
   afterEach(async () => {
     for (const ws of sockets) ws.close();
+    // Closing a client socket doesn't guarantee the server's own WS 'close' handler
+    // (index.ts -> relay.close() -> audioPreprocess.teardown()) has already run -- that's
+    // a separate, asynchronous callback. Without waiting for it here, on a slower/busier
+    // CI runner it can fire late enough to land after app.close() has already torn things
+    // down, surfacing as an unrelated unhandled-rejection failure (confirmed: this exact
+    // race hit CI while passing locally, same category as wsRelay.integration.test.ts's
+    // own afterEach comment). One teardown call is expected per socket opened in a test.
+    if (audioPreprocess && sockets.length > 0) {
+      const expectedCalls = sockets.length;
+      await vi
+        .waitFor(() => expect(audioPreprocess!.teardown).toHaveBeenCalledTimes(expectedCalls), { timeout: 2000 })
+        .catch(() => {});
+    }
     sockets.length = 0;
     await app?.close();
   });
@@ -66,7 +80,7 @@ describe('gateway WS resume -- reconnecting into the same orchestrator session',
   }
 
   it('a valid resume reattaches to the same orchestrator session -- createSession only called once total', async () => {
-    const audioPreprocess = fakeAudioPreprocess();
+    audioPreprocess = fakeAudioPreprocess();
     const orchestrator = fakeOrchestrator();
     orchestrator.resumeSession = vi.fn().mockResolvedValue({ sessionId: 'sess-1', resumeToken: 'tok-2' });
     app = buildServer({ audioPreprocess, orchestrator });
@@ -92,7 +106,7 @@ describe('gateway WS resume -- reconnecting into the same orchestrator session',
   });
 
   it('an invalid/rejected resume falls back to a fresh session -- the call still completes end to end', async () => {
-    const audioPreprocess = fakeAudioPreprocess();
+    audioPreprocess = fakeAudioPreprocess();
     const orchestrator = fakeOrchestrator(); // resumeSession defaults to resolving null
     app = buildServer({ audioPreprocess, orchestrator });
     const port = await serverPort();
@@ -109,7 +123,7 @@ describe('gateway WS resume -- reconnecting into the same orchestrator session',
   });
 
   it('a resume evicts a still-open connection for the same session on this process, without the client closing it first', async () => {
-    const audioPreprocess = fakeAudioPreprocess();
+    audioPreprocess = fakeAudioPreprocess();
     const orchestrator = fakeOrchestrator();
     orchestrator.resumeSession = vi.fn().mockResolvedValue({ sessionId: 'sess-1', resumeToken: 'tok-2' });
     app = buildServer({ audioPreprocess, orchestrator });
