@@ -16,12 +16,15 @@ function fakeAudioPreprocess() {
 
 function fakeOrchestrator(turnResult?: TurnAudioResponse) {
   const client = Object.create(OrchestratorClient.prototype) as OrchestratorClient;
-  client.createSession = vi.fn().mockResolvedValue({ sessionId: 'sess-1' });
+  client.createSession = vi.fn().mockResolvedValue({ sessionId: 'sess-1', resumeToken: 'resume-tok-1' });
+  client.resumeSession = vi.fn().mockResolvedValue(null);
   client.postAudioTurn = vi.fn().mockResolvedValue(
     turnResult ?? { ok: true, data: { transcript: '', replyText: null, audioBase64: null, toolCallsExecuted: [] } },
   );
   return client;
 }
+
+const SESSION_READY = { event: 'SESSION_READY', sessionId: 'sess-1', resumeToken: 'resume-tok-1', resumed: false };
 
 /** Wires a real BatchTurnBackend (today's exact production fallback behavior, see
  * turnBackend.ts) around whichever fakeOrchestrator() a test constructs, instead of a
@@ -98,7 +101,8 @@ describe('ConnectionRelay', () => {
     expect(Array.from(audio as Uint8Array)).toEqual([10, 11, 20, 21, 30, 31]);
 
     const events = jsonSends(sent);
-    expect(events[0]).toEqual({ event: 'STATE_CHANGE', state: 'PROCESSING' });
+    expect(events[0]).toEqual(SESSION_READY);
+    expect(events[1]).toEqual({ event: 'STATE_CHANGE', state: 'PROCESSING' });
   });
 
   it('threads the session id into every audioPreprocess.process call, not just the orchestrator call', async () => {
@@ -186,6 +190,7 @@ describe('ConnectionRelay', () => {
 
     const events = jsonSends(sent);
     expect(events).toEqual([
+      SESSION_READY,
       { event: 'STATE_CHANGE', state: 'PROCESSING' },
       { event: 'TRANSCRIPT', text: 'hello', is_final: true },
       { event: 'STATE_CHANGE', state: 'SPEAKING' },
@@ -220,6 +225,7 @@ describe('ConnectionRelay', () => {
     await sendFrame(relay, frame(2)); // 40ms accumulated >= maxUtteranceMs=20 -> force-flushed
 
     expect(jsonSends(sent)).toEqual([
+      SESSION_READY,
       { event: 'STATE_CHANGE', state: 'PROCESSING' },
       { event: 'STATE_CHANGE', state: 'LISTENING' },
     ]);
@@ -242,6 +248,7 @@ describe('ConnectionRelay', () => {
     await sendFrame(relay, frame(2)); // force-flushes -> the (failing) turn
 
     expect(jsonSends(sent)).toEqual([
+      SESSION_READY,
       { event: 'STATE_CHANGE', state: 'PROCESSING' },
       { event: 'ERROR', code: 'STT_FAILED', message: 'boom', recoverable: true },
       { event: 'STATE_CHANGE', state: 'LISTENING' },
@@ -272,6 +279,7 @@ describe('ConnectionRelay', () => {
     await sendFrame(relay, frame(2)); // force-flushes -> the (failing) turn
 
     expect(jsonSends(sent)).toEqual([
+      SESSION_READY,
       { event: 'STATE_CHANGE', state: 'PROCESSING' },
       { event: 'ERROR', code: 'SESSION_NOT_FOUND', message: 'gone', recoverable: false },
       { event: 'STATE_CHANGE', state: 'ERROR' },
@@ -447,6 +455,82 @@ describe('ConnectionRelay', () => {
 
       expect(audioPreprocess.teardown).toHaveBeenCalledTimes(1);
       expect(vi.mocked(backendFactory.backends[0].close)).toHaveBeenCalledTimes(1);
+    });
+
+    it('invokes deps.close() once per close() call, when provided', async () => {
+      const audioPreprocess = fakeAudioPreprocess();
+      const orchestrator = fakeOrchestrator();
+      const closeSpy = vi.fn();
+      const relay = new ConnectionRelay({
+        audioPreprocess,
+        orchestrator,
+        backendFactory: fakeBackendFactory(orchestrator),
+        claims: CLAIMS,
+        send: () => {},
+        close: closeSpy,
+      });
+      await relay.start();
+
+      relay.close();
+      expect(closeSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('deps.close being omitted does not throw', async () => {
+      const audioPreprocess = fakeAudioPreprocess();
+      const orchestrator = fakeOrchestrator();
+      const relay = new ConnectionRelay({ audioPreprocess, orchestrator, backendFactory: fakeBackendFactory(orchestrator), claims: CLAIMS, send: () => {} });
+      await relay.start();
+
+      expect(() => relay.close()).not.toThrow();
+    });
+  });
+
+  describe('sessionId getter', () => {
+    it('is null before start(), reflects the established id after start(), and is null again after close()', async () => {
+      const audioPreprocess = fakeAudioPreprocess();
+      const orchestrator = fakeOrchestrator();
+      const relay = new ConnectionRelay({ audioPreprocess, orchestrator, backendFactory: fakeBackendFactory(orchestrator), claims: CLAIMS, send: () => {} });
+
+      expect(relay.sessionId).toBeNull();
+      await relay.start();
+      expect(relay.sessionId).toBe('sess-1');
+      relay.close();
+      expect(relay.sessionId).toBeNull();
+    });
+  });
+
+  describe('start(resumeInfo)', () => {
+    it('succeeds: uses the resumed sessionId/resumeToken, marks resumed=true, and never calls createSession', async () => {
+      const audioPreprocess = fakeAudioPreprocess();
+      const orchestrator = fakeOrchestrator();
+      orchestrator.resumeSession = vi.fn().mockResolvedValue({ sessionId: 'sess-1', resumeToken: 'new-tok' });
+      const sent: (string | Uint8Array)[] = [];
+      const relay = new ConnectionRelay(
+        { audioPreprocess, orchestrator, backendFactory: fakeBackendFactory(orchestrator), claims: CLAIMS, send: (d) => sent.push(d) },
+      );
+
+      const ok = await relay.start({ sessionId: 'sess-1', resumeToken: 'old-tok' });
+
+      expect(ok).toBe(true);
+      expect(orchestrator.resumeSession).toHaveBeenCalledWith('sess-1', 'old-tok', CLAIMS.sub);
+      expect(orchestrator.createSession).not.toHaveBeenCalled();
+      expect(jsonSends(sent)[0]).toEqual({ event: 'SESSION_READY', sessionId: 'sess-1', resumeToken: 'new-tok', resumed: true });
+    });
+
+    it('with an invalid/stale token: resumeSession resolves null, falls back to createSession, resumed=false, and the call still succeeds', async () => {
+      const audioPreprocess = fakeAudioPreprocess();
+      const orchestrator = fakeOrchestrator(); // resumeSession defaults to resolving null
+      const sent: (string | Uint8Array)[] = [];
+      const relay = new ConnectionRelay(
+        { audioPreprocess, orchestrator, backendFactory: fakeBackendFactory(orchestrator), claims: CLAIMS, send: (d) => sent.push(d) },
+      );
+
+      const ok = await relay.start({ sessionId: 'sess-1', resumeToken: 'stale-tok' });
+
+      expect(ok).toBe(true); // a bad resume never fails the call
+      expect(orchestrator.resumeSession).toHaveBeenCalledWith('sess-1', 'stale-tok', CLAIMS.sub);
+      expect(orchestrator.createSession).toHaveBeenCalledTimes(1);
+      expect(jsonSends(sent)[0]).toEqual(SESSION_READY); // resumed: false
     });
   });
 });

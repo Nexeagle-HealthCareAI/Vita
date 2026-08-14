@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import jwt from 'jsonwebtoken';
 import { buildServer, extractTicketProtocol } from '../src/index.js';
+import { redeemTicket } from '../src/ticket.js';
+
+// buildServer's JWT_SECRET is read once at module load from JWT_SIGNING_SECRET, defaulting
+// to 'change-me' -- same convention wsRelay.integration.test.ts relies on.
+const JWT_SECRET = 'change-me';
 
 describe('gateway ticket protocol compatibility', () => {
   it('extracts Vita ticket protocols', () => {
@@ -27,5 +33,53 @@ describe('gateway HTTP surface', () => {
     const app = buildServer();
     const res = await app.inject({ method: 'POST', url: '/session/ticket' });
     expect(res.statusCode).toBe(401);
+  });
+
+  describe('POST /session/ticket resume passthrough', () => {
+    afterEach(() => {
+      delete process.env.SESSION_RESUME_ENABLED;
+    });
+
+    it('a resumeSessionId/resumeToken body round-trips into the issued ticket, opaquely', async () => {
+      const app = buildServer();
+      const token = jwt.sign({ sub: 'user-1', role: 'ROLE_RECEPTIONIST' }, JWT_SECRET);
+      const res = await app.inject({
+        method: 'POST',
+        url: '/session/ticket',
+        headers: { authorization: `Bearer ${token}` },
+        payload: { resumeSessionId: 's1', resumeToken: 'tok-1' },
+      });
+
+      const { ticket } = res.json() as { ticket: string };
+      expect(redeemTicket(ticket)?.resumeIntent).toEqual({ sessionId: 's1', resumeToken: 'tok-1' });
+    });
+
+    it('SESSION_RESUME_ENABLED=false drops the resume pair even when the client sends it', async () => {
+      process.env.SESSION_RESUME_ENABLED = 'false';
+      const app = buildServer();
+      const token = jwt.sign({ sub: 'user-1', role: 'ROLE_RECEPTIONIST' }, JWT_SECRET);
+      const res = await app.inject({
+        method: 'POST',
+        url: '/session/ticket',
+        headers: { authorization: `Bearer ${token}` },
+        payload: { resumeSessionId: 's1', resumeToken: 'tok-1' },
+      });
+
+      const { ticket } = res.json() as { ticket: string };
+      expect(redeemTicket(ticket)?.resumeIntent).toBeNull();
+    });
+
+    it('a fresh session (no resume fields in the body) issues a ticket with a null resumeIntent', async () => {
+      const app = buildServer();
+      const token = jwt.sign({ sub: 'user-1', role: 'ROLE_RECEPTIONIST' }, JWT_SECRET);
+      const res = await app.inject({
+        method: 'POST',
+        url: '/session/ticket',
+        headers: { authorization: `Bearer ${token}` },
+      });
+
+      const { ticket } = res.json() as { ticket: string };
+      expect(redeemTicket(ticket)?.resumeIntent).toBeNull();
+    });
   });
 });

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { BinaryFrameType, encodeBinaryFrame, type ServerControlEvent } from '@vita/protocol';
 import type { AudioPreprocessClient } from './audioPreprocessClient.js';
 import type { OrchestratorClient, RelayError } from './orchestratorClient.js';
-import type { SessionClaims } from './ticket.js';
+import type { ResumeIntent, SessionClaims } from './ticket.js';
 import type { TurnBackend, TurnBackendFactory } from './turnBackend.js';
 
 export type RelayState = 'LISTENING' | 'PROCESSING' | 'SPEAKING';
@@ -40,6 +40,13 @@ export interface RelayDeps {
   backendFactory: TurnBackendFactory;
   claims: SessionClaims;
   send: (data: string | Uint8Array) => void;
+  /** Severs the underlying transport. Optional (mirrors `log?`) -- existing unit tests
+   * that don't care about socket lifecycle can omit it. Production wiring (index.ts) sets
+   * this to close the real WS socket, so RelaySessionRegistry.evict() can fully retire a
+   * stale connection on resume -- close() itself never touched the socket before this,
+   * so without it an evicted connection's relay state would die but the socket would stay
+   * open forever. */
+  close?: () => void;
   log?: RelayLogger;
 }
 
@@ -62,7 +69,7 @@ export class ConnectionRelay {
   private readonly config: RelayConfig;
 
   private state: RelayState = 'LISTENING';
-  private sessionId: string | null = null;
+  private _sessionId: string | null = null;
   private backend: TurnBackend | null = null;
 
   private buffer: Uint8Array[] = [];
@@ -84,22 +91,52 @@ export class ConnectionRelay {
     this.config = { ...DEFAULT_RELAY_CONFIG, ...config };
   }
 
-  async start(): Promise<boolean> {
-    const result = await this.deps.orchestrator.createSession({
-      sessionId: randomUUID(),
-      userId: this.deps.claims.sub,
-      role: this.deps.claims.role,
-    });
-    if (!result) return false;
-    this.sessionId = result.sessionId;
+  /** Read-only accessor for the established orchestrator sessionId -- null before start()
+   * resolves and after close(). Lets index.ts register/unregister this relay in
+   * RelaySessionRegistry without changing start()'s Promise<boolean> contract. */
+  get sessionId(): string | null {
+    return this._sessionId;
+  }
+
+  async start(resumeInfo?: ResumeIntent): Promise<boolean> {
+    let established: { sessionId: string; resumeToken: string; resumed: boolean } | null = null;
+
+    if (resumeInfo) {
+      // userId is always the JWT-verified claims.sub, never anything from the
+      // client-supplied resume pair -- a client can't forge ownership of a session it
+      // doesn't hold the JWT identity for. resumeSession() never throws; null means
+      // "can't resume" (invalid/expired/mismatched/unreachable), and this call must
+      // never fail -- it just silently falls through to a fresh session below, same
+      // graceful-degrade philosophy as the streaming->batch backend fallback.
+      const resumed = await this.deps.orchestrator.resumeSession(resumeInfo.sessionId, resumeInfo.resumeToken, this.deps.claims.sub);
+      if (resumed) established = { ...resumed, resumed: true };
+    }
+
+    if (!established) {
+      const created = await this.deps.orchestrator.createSession({
+        sessionId: randomUUID(),
+        userId: this.deps.claims.sub,
+        role: this.deps.claims.role,
+      });
+      if (!created) return false;
+      established = { ...created, resumed: false };
+    }
+
+    this._sessionId = established.sessionId;
     // create() never throws -- it always resolves to *some* backend (streaming, or a
     // batch fallback if streaming is disabled/unavailable), so this can't fail this
-    // call the way the createSession() check above can.
-    this.backend = await this.deps.backendFactory.create(this.sessionId, {
+    // call the way the createSession()/resumeSession() checks above can.
+    this.backend = await this.deps.backendFactory.create(this._sessionId, {
       onPartialTranscript: (text) => this.onPartialTranscript(text),
       onFinalTranscript: (text) => this.onFinalTranscript(text),
       onReplyAudio: (audio) => this.onReplyAudio(audio),
       onError: (error) => this.onBackendError(error),
+    });
+    this.sendJson({
+      event: 'SESSION_READY',
+      sessionId: established.sessionId,
+      resumeToken: established.resumeToken,
+      resumed: established.resumed,
     });
     return true;
   }
@@ -119,21 +156,24 @@ export class ConnectionRelay {
 
   close(): void {
     if (this.bargeInTimer) clearTimeout(this.bargeInTimer);
-    if (this.sessionId) {
+    if (this._sessionId) {
       // Fire-and-forget, same pattern as start()'s call below -- frees this session's
       // model state in audio-preprocess promptly rather than waiting out its TTL
       // safety net. Capture the id before clearing it.
-      const sessionId = this.sessionId;
+      const sessionId = this._sessionId;
       void this.deps.audioPreprocess.teardown(sessionId).catch((err) => {
         this.deps.log?.warn({ err }, 'relay: audio-preprocess teardown failed');
       });
       this.backend?.close();
     }
-    this.sessionId = null;
+    this._sessionId = null;
+    // Unconditional & idempotent -- calling .close() on an already-closed socket is a
+    // documented no-op, same precedent stopSession() already relies on in the web-sdk.
+    this.deps.close?.();
   }
 
   private async processFrame(frame: Uint8Array): Promise<void> {
-    if (!this.sessionId) return; // bootstrap failed, or a prior turn ended the session (non-recoverable error)
+    if (!this._sessionId) return; // bootstrap failed, or a prior turn ended the session (non-recoverable error)
 
     if (this.state === 'PROCESSING') {
       // No overlapping turns in Phase 1 -- audio received mid-turn is dropped, not queued.
@@ -148,7 +188,7 @@ export class ConnectionRelay {
   }
 
   private async processListeningFrame(frame: Uint8Array): Promise<void> {
-    const { frame: denoised, speechDetected } = await this.deps.audioPreprocess.process(frame, this.sessionId!);
+    const { frame: denoised, speechDetected } = await this.deps.audioPreprocess.process(frame, this._sessionId!);
 
     if (!this.accumulating) {
       if (!speechDetected) {
@@ -211,7 +251,7 @@ export class ConnectionRelay {
   private async processSpeakingFrame(frame: Uint8Array): Promise<void> {
     if (!this.config.bargeInEnabled || !this.bargeInArmed) return;
 
-    const { speechDetected } = await this.deps.audioPreprocess.process(frame, this.sessionId!);
+    const { speechDetected } = await this.deps.audioPreprocess.process(frame, this._sessionId!);
     if (speechDetected) {
       this.speechRunMs += this.config.frameMs;
     } else {
@@ -275,7 +315,7 @@ export class ConnectionRelay {
       this.setState('LISTENING');
     } else {
       this.sendJson({ event: 'STATE_CHANGE', state: 'ERROR' });
-      this.sessionId = null; // stop relaying entirely until the client reconnects
+      this._sessionId = null; // stop relaying entirely until the client reconnects
     }
   }
 

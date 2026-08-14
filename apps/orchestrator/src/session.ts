@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { Redis } from 'ioredis';
 import type { ChatMessage } from './groq.js';
 
@@ -34,14 +35,20 @@ export class SessionStore {
     return [`${VITA_SESSION_PREFIX}${sessionId}`, `${LEGACY_SESSION_PREFIX}${sessionId}`];
   }
 
-  async create(session: Omit<DialogueSession, 'updatedAt'>): Promise<DialogueSession> {
+  /** Shared dual-key (vita: + legacy tera:) SET...EX write used by create/update/resume/
+   * rotateResumeToken, so the "refresh TTL on every successful touch" invariant can't
+   * drift between them again -- this is exactly the invariant resume() used to violate
+   * (see its own doc comment below). */
+  private async persist(session: Omit<DialogueSession, 'updatedAt'>): Promise<DialogueSession> {
     const full: DialogueSession = { ...session, updatedAt: Date.now() };
     await Promise.all(
-      this.keys(session.sessionId).map((key) =>
-        this.redis.set(key, JSON.stringify(full), 'EX', SESSION_TTL_SECONDS),
-      ),
+      this.keys(full.sessionId).map((key) => this.redis.set(key, JSON.stringify(full), 'EX', SESSION_TTL_SECONDS)),
     );
     return full;
+  }
+
+  async create(session: Omit<DialogueSession, 'updatedAt'>): Promise<DialogueSession> {
+    return this.persist(session);
   }
 
   async get(sessionId: string): Promise<DialogueSession | null> {
@@ -50,22 +57,36 @@ export class SessionStore {
     return raw ? (JSON.parse(raw) as DialogueSession) : null;
   }
 
-  /** Reattach after a client reconnect using the resume token, so a WiFi
-   * blip doesn't force restarting the whole voice interaction. */
+  /** Reattach after a client reconnect using the resume token, so a WiFi blip doesn't
+   * force restarting the whole voice interaction. Refreshes the TTL on success via
+   * persist() -- previously this returned the session as-is without ever re-writing it,
+   * so a "successfully resumed" session kept counting down toward its ORIGINAL expiry.
+   * Deliberately does NOT rotate the token or check userId -- both are the caller's
+   * (route's) job, not the store's, see rotateResumeToken(). */
   async resume(sessionId: string, resumeToken: string): Promise<DialogueSession | null> {
     const session = await this.get(sessionId);
     if (!session || session.resumeToken !== resumeToken) return null;
-    return session;
+    return this.persist(session);
+  }
+
+  /** Mints and persists a new resumeToken for an already-authorized session (refreshing
+   * TTL in the same write). Deliberately separate from resume() -- call this only AFTER
+   * the caller has independently verified the requester is actually allowed to resume
+   * this session (e.g. a userId cross-check). If resume() rotated the token itself, a
+   * request carrying a leaked-but-real token alongside a wrong/spoofed userId would still
+   * silently invalidate the legitimate owner's token before that check ever ran.
+   * Single-use-per-resume: closes the replay window on a captured sessionId+token pair,
+   * mirroring ticket.ts's single-use ticket. */
+  async rotateResumeToken(sessionId: string): Promise<DialogueSession | null> {
+    const session = await this.get(sessionId);
+    if (!session) return null;
+    return this.persist({ ...session, resumeToken: randomUUID() });
   }
 
   async update(sessionId: string, patch: Partial<DialogueSession>): Promise<DialogueSession | null> {
     const current = await this.get(sessionId);
     if (!current) return null;
-    const next = { ...current, ...patch, updatedAt: Date.now() };
-    await Promise.all(
-      this.keys(sessionId).map((key) => this.redis.set(key, JSON.stringify(next), 'EX', SESSION_TTL_SECONDS)),
-    );
-    return next;
+    return this.persist({ ...current, ...patch });
   }
 
   async destroy(sessionId: string): Promise<void> {

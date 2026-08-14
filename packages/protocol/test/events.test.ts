@@ -38,4 +38,18 @@ describe('server control event schema', () => {
     const parsed = ServerControlEvent.safeParse({ event: 'NOT_A_REAL_EVENT' });
     expect(parsed.success).toBe(false);
   });
+
+  it('accepts a valid SESSION_READY event, both resumed:true and resumed:false', () => {
+    expect(
+      ServerControlEvent.safeParse({ event: 'SESSION_READY', sessionId: 'sess-1', resumeToken: 'tok-1', resumed: false }).success,
+    ).toBe(true);
+    expect(
+      ServerControlEvent.safeParse({ event: 'SESSION_READY', sessionId: 'sess-1', resumeToken: 'tok-2', resumed: true }).success,
+    ).toBe(true);
+  });
+
+  it('rejects a SESSION_READY event missing resumeToken or resumed', () => {
+    expect(ServerControlEvent.safeParse({ event: 'SESSION_READY', sessionId: 'sess-1', resumed: false }).success).toBe(false);
+    expect(ServerControlEvent.safeParse({ event: 'SESSION_READY', sessionId: 'sess-1', resumeToken: 'tok-1' }).success).toBe(false);
+  });
 });

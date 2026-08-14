@@ -21,7 +21,8 @@ function fakeAudioPreprocess() {
 
 function fakeOrchestrator() {
   const client = Object.create(OrchestratorClient.prototype) as OrchestratorClient;
-  client.createSession = vi.fn().mockResolvedValue({ sessionId: 'sess-1' });
+  client.createSession = vi.fn().mockResolvedValue({ sessionId: 'sess-1', resumeToken: 'resume-tok-1' });
+  client.resumeSession = vi.fn().mockResolvedValue(null);
   client.postAudioTurn = vi.fn().mockResolvedValue({
     ok: true,
     data: {
@@ -132,6 +133,7 @@ describe('gateway WS relay -- streaming-enabled call falls back to batch end to 
     // the degrade was real, not a lucky no-op.
     expect(orchestrator.postAudioTurn).toHaveBeenCalledTimes(1);
     expect(received).toEqual([
+      { event: 'SESSION_READY', sessionId: 'sess-1', resumeToken: 'resume-tok-1', resumed: false },
       { event: 'STATE_CHANGE', state: 'PROCESSING' },
       { event: 'TRANSCRIPT', text: 'is dr patel around', is_final: true },
       { event: 'STATE_CHANGE', state: 'SPEAKING' },

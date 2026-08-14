@@ -47,12 +47,26 @@ export const ErrorEvent = z.object({
   recoverable: z.boolean(),
 });
 
+/** Sent once, immediately after a session is established -- fresh OR resumed. `resumed`
+ * distinguishes the two; every connection (even a first-ever one) needs a sessionId +
+ * resumeToken handed to it before it can ever resume later, so this fires unconditionally
+ * rather than only on an actual resume. Purely additive -- doesn't require a
+ * PROTOCOL_VERSION bump, since old clients silently ignore event types they don't
+ * recognize (see web-sdk's handleMessage(), which has no default: case). */
+export const SessionReadyEvent = z.object({
+  event: z.literal('SESSION_READY'),
+  sessionId: z.string(),
+  resumeToken: z.string(),
+  resumed: z.boolean(),
+});
+
 export const ServerControlEvent = z.discriminatedUnion('event', [
   StateChangeEvent,
   TranscriptEvent,
   FormAutofillEvent,
   ClearPlaybackEvent,
   ErrorEvent,
+  SessionReadyEvent,
 ]);
 export type ServerControlEvent = z.infer<typeof ServerControlEvent>;
 

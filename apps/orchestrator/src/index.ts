@@ -99,6 +99,53 @@ export function buildServer(
     return reply.send(session);
   });
 
+  // Reattaches a dropped WS connection to its existing session instead of starting a
+  // fresh one -- see the gateway's ConnectionRelay.start()'s resumeInfo path, which posts
+  // here before falling back to POST /session above on any failure. Every failure case
+  // (unknown session, wrong token, wrong userId, missing fields) returns the SAME 404
+  // shape deliberately -- distinguishing them would let a caller use the response as an
+  // oracle to enumerate live session ids or narrow a token-guessing attack, mirroring how
+  // the gateway's redeemTicket() already collapses its own failure modes into one null.
+  app.post('/session/:id/resume', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = req.body as { resumeToken?: string; userId?: string };
+
+    if (!body?.resumeToken || !body?.userId) {
+      return reply.code(404).send({ error: 'session not found' });
+    }
+
+    const resumed = await sessions.resume(id, body.resumeToken);
+    if (!resumed || resumed.userId !== body.userId) {
+      recordAuditEvent({
+        ts: Date.now(),
+        sessionId: id,
+        userId: body.userId,
+        role: resumed?.role ?? 'ROLE_RECEPTIONIST',
+        action: 'session_resume',
+        outcome: 'denied',
+      });
+      return reply.code(404).send({ error: 'session not found' });
+    }
+
+    // Rotate only now that the requester is authorized -- see rotateResumeToken()'s doc
+    // comment for why this must not happen inside resume() itself.
+    const rotated = await sessions.rotateResumeToken(id);
+    if (!rotated) {
+      return reply.code(404).send({ error: 'session not found' });
+    }
+
+    recordAuditEvent({
+      ts: Date.now(),
+      sessionId: id,
+      userId: rotated.userId,
+      role: rotated.role,
+      action: 'session_resume',
+      outcome: 'success',
+    });
+
+    return reply.send({ sessionId: rotated.sessionId, resumeToken: rotated.resumeToken });
+  });
+
   app.post('/session/:id/tool-call', async (req, reply) => {
     const { id } = req.params as { id: string };
     const { tool } = req.body as { tool: string };

@@ -103,10 +103,14 @@ cd apps/audio-preprocess && pytest -q
 
 The versioned event contract (`PROTOCOL_VERSION`, `ServerControlEvent`,
 binary frame codec) is complete and tested (`packages/protocol/test/events.test.ts`).
-When you add a new event type (e.g. a `SESSION_RESUME` control message for
-reconnects), add it to the `ServerControlEvent`/`ClientControlEvent`
-discriminated unions here first — both the gateway and the web SDK import
-from this package, so the type system catches drift immediately.
+When you add a new event type, add it to the `ServerControlEvent`/
+`ClientControlEvent` discriminated unions here first — both the gateway and
+the web SDK import from this package, so the type system catches drift
+immediately. Session resume across a dropped connection now works this way:
+a `SESSION_READY` event (fresh or resumed) hands the client a `sessionId`/
+`resumeToken` pair, which a reconnecting client returns in `POST
+/session/ticket`'s body; see `apps/gateway/src/ticket.ts`'s `ResumeIntent`
+and `apps/orchestrator/src/session.ts`'s `resume()`/`rotateResumeToken()`.
 
 ### 3.2 `packages/web-sdk` — done for transport/audio plumbing; wire up your app
 

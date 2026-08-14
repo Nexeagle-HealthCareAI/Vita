@@ -24,7 +24,8 @@ function fakeAudioPreprocess() {
 
 function fakeOrchestrator() {
   const client = Object.create(OrchestratorClient.prototype) as OrchestratorClient;
-  client.createSession = vi.fn().mockResolvedValue({ sessionId: 'sess-1' });
+  client.createSession = vi.fn().mockResolvedValue({ sessionId: 'sess-1', resumeToken: 'resume-tok-1' });
+  client.resumeSession = vi.fn().mockResolvedValue(null);
   client.postAudioTurn = vi.fn().mockResolvedValue({
     ok: true,
     data: {
@@ -118,6 +119,7 @@ describe('gateway WS relay -- one happy-path utterance, end to end through real 
     expect(orchestrator.createSession).toHaveBeenCalledWith({ sessionId: expect.any(String), userId: 'user-1', role: 'ROLE_RECEPTIONIST' });
     expect(orchestrator.postAudioTurn).toHaveBeenCalledTimes(1);
     expect(received).toEqual([
+      { event: 'SESSION_READY', sessionId: 'sess-1', resumeToken: 'resume-tok-1', resumed: false },
       { event: 'STATE_CHANGE', state: 'PROCESSING' },
       { event: 'TRANSCRIPT', text: 'is dr patel around', is_final: true },
       { event: 'STATE_CHANGE', state: 'SPEAKING' },

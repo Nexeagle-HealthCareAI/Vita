@@ -11,8 +11,8 @@ describe('ticket issuance & redemption', () => {
     const token = jwt.sign({ sub: 'user-1', role: 'ROLE_RECEPTIONIST' }, SECRET);
     const ticket = verifyJwtAndIssueTicket(token, SECRET);
 
-    const claims = redeemTicket(ticket);
-    expect(claims).toEqual({ sub: 'user-1', role: 'ROLE_RECEPTIONIST' });
+    const redeemed = redeemTicket(ticket);
+    expect(redeemed).toEqual({ claims: { sub: 'user-1', role: 'ROLE_RECEPTIONIST' }, resumeIntent: null });
 
     // single-use: second redemption must fail
     expect(redeemTicket(ticket)).toBeNull();
@@ -28,10 +28,17 @@ describe('ticket issuance & redemption', () => {
     // can't accidentally reintroduce the v1.0 privilege-escalation path.
     const token = jwt.sign({ sub: 'user-2', role: 'ROLE_DOCTOR' }, SECRET);
     const ticket = verifyJwtAndIssueTicket(token, SECRET);
-    expect(redeemTicket(ticket)?.role).toBe('ROLE_DOCTOR');
+    expect(redeemTicket(ticket)?.claims.role).toBe('ROLE_DOCTOR');
   });
 
   it('rejects an expired or unknown ticket', () => {
     expect(redeemTicket('does-not-exist')).toBeNull();
+  });
+
+  it('carries an optional resumeIntent through issuance to redemption, opaquely', () => {
+    const token = jwt.sign({ sub: 'user-1', role: 'ROLE_RECEPTIONIST' }, SECRET);
+    const ticket = verifyJwtAndIssueTicket(token, SECRET, { sessionId: 's1', resumeToken: 'tok-1' });
+
+    expect(redeemTicket(ticket)?.resumeIntent).toEqual({ sessionId: 's1', resumeToken: 'tok-1' });
   });
 });

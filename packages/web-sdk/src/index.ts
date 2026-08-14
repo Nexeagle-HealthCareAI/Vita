@@ -25,6 +25,11 @@ export interface TeraConfig {
   onFormAutofill?: (fields: PatientFormFields) => void;
   onStateChange?: (state: TeraState) => void;
   onError?: (error: { code: string; message: string; recoverable: boolean }) => void;
+  /** Fires on every SESSION_READY (i.e. every successful connect, fresh or resumed) with
+   * whether this connect reused a prior conversation. Lets a host app decide e.g. whether
+   * to clear a displayed transcript log on a fresh session vs. leave it in place on a
+   * resumed one -- the only way to observe the outcome SESSION_RESUME actually produces. */
+  onSessionResumed?: (resumed: boolean) => void;
 }
 
 const MAX_RECONNECT_DELAY_MS = 15_000;
@@ -38,6 +43,13 @@ export class TeraWebSDK {
   private reconnectAttempt = 0;
   private userInitiatedStop = false;
   private torn_down = false;
+  // Held in memory only (not persisted across a page reload -- matches "WiFi blip", not
+  // "user refreshed the tab") so a reconnect can ask the gateway to reattach to the same
+  // orchestrator session instead of silently starting a fresh one. Populated from
+  // SESSION_READY; cleared on an explicit stopSession() so a deliberate hangup can never
+  // be resumed afterward.
+  private resumeSessionId: string | null = null;
+  private resumeToken: string | null = null;
 
   constructor(config: TeraConfig) {
     this.config = config;
@@ -55,11 +67,21 @@ export class TeraWebSDK {
     }
   }
 
-  /** Ticket exchange happens over HTTPS so the long-lived JWT never touches the WS URL or proxy logs. */
+  /** Ticket exchange happens over HTTPS so the long-lived JWT never touches the WS URL or
+   * proxy logs -- a held resume pair rides the same HTTPS-protected body, for the same
+   * reason (see docs/ARCHITECTURE.md's SESSION_RESUME notes). Only sent if BOTH fields are
+   * held; the gateway treats an absent/incomplete pair as "start a fresh session," so an
+   * old/unmodified SDK build (which never sends either field) is unaffected. */
   private async fetchTicket(): Promise<string> {
+    const requestBody: { resumeSessionId?: string; resumeToken?: string } = {};
+    if (this.resumeSessionId && this.resumeToken) {
+      requestBody.resumeSessionId = this.resumeSessionId;
+      requestBody.resumeToken = this.resumeToken;
+    }
     const res = await fetch(`${this.config.gatewayOrigin}/session/ticket`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${this.config.authToken}` },
+      headers: { Authorization: `Bearer ${this.config.authToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
     });
     if (!res.ok) {
       throw new Error(`ticket exchange failed: ${res.status}`);
@@ -159,6 +181,11 @@ export class TeraWebSDK {
       case 'ERROR':
         this.config.onError?.(msg);
         break;
+      case 'SESSION_READY':
+        this.resumeSessionId = msg.sessionId;
+        this.resumeToken = msg.resumeToken;
+        this.config.onSessionResumed?.(msg.resumed);
+        break;
     }
   }
 
@@ -206,6 +233,8 @@ export class TeraWebSDK {
     if (this.torn_down) return;
     this.torn_down = true;
     this.userInitiatedStop = true;
+    this.resumeSessionId = null;
+    this.resumeToken = null; // an explicit hangup must never be resumable afterward
     this.teardownAudio();
     this.ws?.close();
     this.ws = null;
