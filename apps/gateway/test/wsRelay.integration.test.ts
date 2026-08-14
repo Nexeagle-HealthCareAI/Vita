@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 import WebSocket from 'ws';
 import jwt from 'jsonwebtoken';
 import { BinaryFrameType, encodeBinaryFrame } from '@vita/protocol';
@@ -42,9 +42,21 @@ function fakeOrchestrator() {
 describe('gateway WS relay -- one happy-path utterance, end to end through real Fastify + a real WS client', () => {
   let app: ReturnType<typeof buildServer> | undefined;
   let ws: WebSocket | undefined;
+  let audioPreprocess: ReturnType<typeof fakeAudioPreprocess> | undefined;
 
   afterEach(async () => {
-    ws?.close();
+    if (ws) {
+      // Closing the client socket doesn't guarantee the *server's* WS 'close' handler
+      // (index.ts -> relay.close() -> audioPreprocess.teardown()) has already run --
+      // that's a separate, asynchronous callback on the server side. Without waiting for
+      // it here, it can fire late enough to land after this test file's environment has
+      // already been torn down, surfacing as an unrelated "Unhandled Error" (confirmed:
+      // this exact race failed in CI while passing locally, purely from timing).
+      ws.close();
+      if (audioPreprocess) {
+        await vi.waitFor(() => expect(audioPreprocess!.teardown as Mock).toHaveBeenCalled(), { timeout: 2000 }).catch(() => {});
+      }
+    }
     await app?.close();
     delete process.env.MIN_UTTERANCE_SPEECH_MS;
     delete process.env.UTTERANCE_SILENCE_MS;
@@ -57,7 +69,7 @@ describe('gateway WS relay -- one happy-path utterance, end to end through real 
     process.env.MIN_UTTERANCE_SPEECH_MS = '20';
     process.env.UTTERANCE_SILENCE_MS = '20';
 
-    const audioPreprocess = fakeAudioPreprocess();
+    audioPreprocess = fakeAudioPreprocess();
     const orchestrator = fakeOrchestrator();
     app = buildServer({ audioPreprocess, orchestrator });
     await app.listen({ port: 0 });
