@@ -1,6 +1,7 @@
 import type { WebSocket } from 'ws';
 import { BinaryFrameType, decodeBinaryFrame, encodeBinaryFrame } from '@vita/protocol';
 import type { HmsClient } from '@vita/mcp-1hms';
+import type { HybridRetriever } from '@vita/rag';
 import type { SessionStore } from './session.js';
 import type { GroqClient } from './groq.js';
 import type { SarvamClient } from './sarvam.js';
@@ -30,6 +31,7 @@ export interface StreamSessionDeps {
    * SarvamRealtimeSession, which handles STT for this same call. */
   sarvamBatch: SarvamClient;
   hms: HmsClient;
+  retriever?: HybridRetriever;
   sarvamRealtimeFactory: () => SarvamRealtimeSession;
   connectionGate: ConnectionOpenGate;
   connectTimeoutMs: number;
@@ -129,7 +131,14 @@ export class StreamSessionHandler {
 
     let result;
     try {
-      result = await runTurn({ session, transcript: text, groq: this.deps.groq, sarvam: this.deps.sarvamBatch, hms: this.deps.hms });
+      result = await runTurn({
+        session,
+        transcript: text,
+        groq: this.deps.groq,
+        sarvam: this.deps.sarvamBatch,
+        hms: this.deps.hms,
+        retriever: this.deps.retriever,
+      });
     } catch (err) {
       recordAuditEvent({
         ts: Date.now(),

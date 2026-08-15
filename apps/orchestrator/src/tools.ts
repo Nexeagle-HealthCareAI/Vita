@@ -1,4 +1,6 @@
 import type { HmsClient } from '@vita/mcp-1hms';
+import type { HybridRetriever } from '@vita/rag';
+import { FAQ_DOCS } from '@vita/rag';
 import { assertToolPermission, type Role } from './rbac.js';
 import type { GroqToolSchema } from './groq.js';
 
@@ -65,6 +67,21 @@ export const GROQ_TOOL_SCHEMAS: GroqToolSchema[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'search_vita_faq',
+      description:
+        'Answer generic questions about Vita itself -- what it is, what it can do, where it runs, who built it, what languages it understands, whether bookings are final, etc. Not for patient, doctor, or appointment data -- use the other tools for those.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'The question being asked, in plain language' },
+        },
+        required: ['query'],
+      },
+    },
+  },
 ];
 
 export class UnknownToolError extends Error {
@@ -79,12 +96,19 @@ export class UnknownToolError extends Error {
  * RBAC-checks first (assertToolPermission throws ForbiddenError, which the caller in
  * pipeline.ts catches and audits, same as the existing /session/:id/tool-call route
  * already does), then dispatches to the matching HmsClient method.
+ *
+ * `retriever` is optional (unlike `hms`) so every existing caller/test keeps compiling
+ * unchanged -- mirrors GroqClient's optional `apiUrl` param elsewhere in this codebase.
+ * If search_vita_faq is requested with no retriever supplied, that's the same drift-guard
+ * UnknownToolError the switch already throws for RBAC-allowed-but-unimplemented tools
+ * (e.g. read_patient_emr).
  */
 export async function executeTool(
   name: string,
   args: Record<string, unknown>,
   role: Role,
   hms: HmsClient,
+  retriever?: HybridRetriever,
 ): Promise<unknown> {
   assertToolPermission(name, role);
 
@@ -104,6 +128,18 @@ export async function executeTool(
           reason?: string;
         },
       );
+    case 'search_vita_faq': {
+      if (!retriever) throw new UnknownToolError(name);
+      const { query } = args as { query: string };
+      const hits = await retriever.search(query, 3);
+      // Return clean {question, answer} pairs, not HybridSearchResult's raw indexed blob --
+      // keeps HybridRetriever a generic, FAQ-agnostic primitive; shaping what the LLM sees
+      // is this layer's job, same separation already used for the HmsClient tools above.
+      return hits
+        .map((hit) => FAQ_DOCS.find((doc) => doc.id === hit.id))
+        .filter((doc): doc is (typeof FAQ_DOCS)[number] => doc !== undefined)
+        .map((doc) => ({ question: doc.question, answer: doc.answer }));
+    }
     default:
       throw new UnknownToolError(name);
   }

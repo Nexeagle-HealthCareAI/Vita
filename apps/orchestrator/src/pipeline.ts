@@ -1,4 +1,5 @@
 import type { HmsClient } from '@vita/mcp-1hms';
+import type { HybridRetriever } from '@vita/rag';
 import { GroqClient, type ChatMessage } from './groq.js';
 import { SarvamClient } from './sarvam.js';
 import { GROQ_TOOL_SCHEMAS, executeTool, UnknownToolError } from './tools.js';
@@ -15,8 +16,10 @@ const SYSTEM_PROMPT =
   'date, and book_appointment to request an appointment (this also registers the patient ' +
   '-- there is no separate registration step). Bookings are non-binding requests; the ' +
   'exact time is confirmed by hospital staff afterward, so never tell a patient their ' +
-  'time is final. Never invent patient, doctor, or availability information -- only state ' +
-  'what a tool call actually returned.';
+  'time is final. Use search_vita_faq for generic questions about Vita itself (what it is, ' +
+  'what it can do, where it runs, etc.) rather than the hospital tools above. Never invent ' +
+  'patient, doctor, availability, or Vita-related information -- only state what a tool ' +
+  'call actually returned.';
 
 function modelForRole(role: DialogueSession['role']): string {
   return role === 'ROLE_DOCTOR'
@@ -40,8 +43,11 @@ export async function runTurn(opts: {
   groq: GroqClient;
   sarvam: SarvamClient;
   hms: HmsClient;
+  /** Optional so every existing caller/test keeps compiling unchanged -- see
+   * executeTool's doc comment in tools.js for the same reasoning. */
+  retriever?: HybridRetriever;
 }): Promise<RunTurnResult> {
-  const { session, transcript, groq, sarvam, hms } = opts;
+  const { session, transcript, groq, sarvam, hms, retriever } = opts;
   const model = modelForRole(session.role);
   const toolCallsExecuted: string[] = [];
 
@@ -72,7 +78,7 @@ export async function runTurn(opts: {
     for (const call of result.toolCalls) {
       let resultText: string;
       try {
-        const toolResult = await executeTool(call.name, call.arguments, session.role, hms);
+        const toolResult = await executeTool(call.name, call.arguments, session.role, hms, retriever);
         recordAuditEvent({
           ts: Date.now(),
           sessionId: session.sessionId,

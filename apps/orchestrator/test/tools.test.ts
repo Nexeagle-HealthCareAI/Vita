@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { HmsClient } from '@vita/mcp-1hms';
+import { FAQ_DOCS } from '@vita/rag';
 import { executeTool, UnknownToolError } from '../src/tools.js';
 import { ForbiddenError } from '../src/rbac.js';
+import { mockRetriever } from './helpers.js';
 
 function mockHms() {
   const client = Object.create(HmsClient.prototype) as HmsClient;
@@ -62,5 +64,29 @@ describe('executeTool', () => {
     // exists for.
     const hms = mockHms();
     await expect(executeTool('read_patient_emr', {}, 'ROLE_DOCTOR', hms)).rejects.toThrow(UnknownToolError);
+  });
+
+  it('dispatches search_vita_faq to the retriever and maps hits back to {question, answer} pairs', async () => {
+    const hms = mockHms();
+    const doc = FAQ_DOCS[0]!;
+    const retriever = mockRetriever([{ id: doc.id, text: 'irrelevant raw blob', score: 0.9 }]);
+
+    const result = await executeTool('search_vita_faq', { query: doc.question }, 'ROLE_RECEPTIONIST', hms, retriever);
+
+    expect(retriever.search).toHaveBeenCalledWith(doc.question, 3);
+    expect(result).toEqual([{ question: doc.question, answer: doc.answer }]);
+  });
+
+  it('allows both a receptionist and a doctor to call search_vita_faq', async () => {
+    const hms = mockHms();
+    for (const role of ['ROLE_RECEPTIONIST', 'ROLE_DOCTOR'] as const) {
+      const retriever = mockRetriever([]);
+      await expect(executeTool('search_vita_faq', { query: 'what is vita' }, role, hms, retriever)).resolves.toEqual([]);
+    }
+  });
+
+  it('throws UnknownToolError for search_vita_faq when no retriever is supplied', async () => {
+    const hms = mockHms();
+    await expect(executeTool('search_vita_faq', { query: 'what is vita' }, 'ROLE_RECEPTIONIST', hms)).rejects.toThrow(UnknownToolError);
   });
 });

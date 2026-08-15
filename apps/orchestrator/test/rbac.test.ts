@@ -26,4 +26,9 @@ describe('RBAC tool permissions', () => {
       ForbiddenError,
     );
   });
+
+  it('allows both a receptionist and a doctor to search the FAQ', () => {
+    expect(() => assertToolPermission('search_vita_faq', 'ROLE_RECEPTIONIST')).not.toThrow();
+    expect(() => assertToolPermission('search_vita_faq', 'ROLE_DOCTOR')).not.toThrow();
+  });
 });

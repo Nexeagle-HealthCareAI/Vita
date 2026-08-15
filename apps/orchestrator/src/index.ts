@@ -1,7 +1,9 @@
 import Fastify from 'fastify';
 import websocketPlugin from '@fastify/websocket';
 import { Redis as IORedis, type Redis } from 'ioredis';
+import { QdrantClient } from '@qdrant/js-client-rest';
 import { HmsClient } from '@vita/mcp-1hms';
+import { HybridRetriever, LocalEmbedder, FAQ_DOCS, faqEmbedText } from '@vita/rag';
 import { SessionStore } from './session.js';
 import { assertToolPermission, ForbiddenError, type Role } from './rbac.js';
 import { recordAuditEvent } from './audit.js';
@@ -21,6 +23,7 @@ export function buildServer(
     groq?: GroqClient;
     sarvam?: SarvamClient;
     hms?: HmsClient;
+    retriever?: HybridRetriever;
     sarvamRealtimeFactory?: () => SarvamRealtimeSession;
     connectionGate?: ConnectionOpenGate;
   },
@@ -38,6 +41,31 @@ export function buildServer(
   const hms =
     clients?.hms ??
     new HmsClient(process.env.HMS_API_BASE_URL ?? 'http://localhost:5000', process.env.HMS_API_KEY ?? '');
+  // FAQ retrieval (search_vita_faq tool -- see tools.ts). Constructed synchronously and
+  // cheaply: QdrantClient's constructor doesn't connect eagerly, LocalEmbedder's model
+  // load is lazy (first real embed() call), and indexCorpus() over ~10 FAQ docs is
+  // in-memory BM25, no I/O -- so this needs no async ripple into buildServer() or the
+  // many existing tests that call it synchronously. Requires `pnpm --filter @vita/rag
+  // ingest` to have populated Qdrant's dense vectors at least once (see that package's
+  // README/ingest.ts) -- this constructor doesn't do that itself.
+  const retriever =
+    clients?.retriever ??
+    (() => {
+      const r = new HybridRetriever(
+        new QdrantClient({
+          url: process.env.QDRANT_URL ?? 'http://localhost:6333',
+          apiKey: process.env.QDRANT_API_KEY || undefined,
+          // No real Qdrant is reachable in most test/CI runs (this default is only ever
+          // actually hit in tests that don't override clients.retriever) -- skips a
+          // background version-compatibility check that otherwise just console.warns.
+          checkCompatibility: false,
+        }),
+        process.env.QDRANT_FAQ_COLLECTION ?? 'vita_faq',
+        new LocalEmbedder().embed,
+      );
+      r.indexCorpus(FAQ_DOCS.map((d) => ({ id: d.id, text: faqEmbedText(d) })));
+      return r;
+    })();
   // Real-time streaming STT (apps/gateway/src/streamingTurnBackend.ts's counterpart) -- one
   // Sarvam realtime WS session per call, gated by connectionGate to stagger connection-open
   // bursts (Sarvam's rate limiter is burst-sensitive, not a static ceiling -- see
@@ -178,9 +206,11 @@ export function buildServer(
       outcome: 'success',
     });
     // Direct "client names a tool itself" call -- kept separate from the LLM-driven
-    // /session/:id/turn route below, which decides which tool (if any) to call.
-    // TODO: also wire packages/rag retrieval here/in the turn pipeline once embeddings
-    // + Qdrant ingestion exist (docs/BUILD_GUIDE.md §3.7).
+    // /session/:id/turn route below, which decides which tool (if any) to call. This
+    // route doesn't actually dispatch to executeTool for any of the 3 HMS tools either
+    // (RBAC-check + audit only, then a bare acknowledgement) -- that gap predates and is
+    // unrelated to search_vita_faq/RAG, which is wired into the LLM-driven /turn route's
+    // pipeline.ts instead. Not addressed here.
     return reply.send({ status: 'accepted', tool });
   });
 
@@ -198,7 +228,7 @@ export function buildServer(
       return reply.code(400).send({ error: 'transcript is required' });
     }
 
-    const result = await runTurn({ session, transcript, groq, sarvam, hms });
+    const result = await runTurn({ session, transcript, groq, sarvam, hms, retriever });
     await sessions.update(id, { history: result.updatedHistory, turnState: 'IDLE' });
 
     return reply.send({
@@ -254,7 +284,7 @@ export function buildServer(
 
     let result;
     try {
-      result = await runTurn({ session, transcript, groq, sarvam, hms });
+      result = await runTurn({ session, transcript, groq, sarvam, hms, retriever });
     } catch (err) {
       recordAuditEvent({
         ts: Date.now(),
@@ -297,6 +327,7 @@ export function buildServer(
           groq,
           sarvamBatch: sarvam,
           hms,
+          retriever,
           sarvamRealtimeFactory,
           connectionGate,
           connectTimeoutMs: Number(process.env.SARVAM_CONNECT_TIMEOUT_MS ?? 1800),

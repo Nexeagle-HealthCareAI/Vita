@@ -1,5 +1,6 @@
 import { vi } from 'vitest';
 import { HmsClient } from '@vita/mcp-1hms';
+import { HybridRetriever, type HybridSearchResult } from '@vita/rag';
 import { GroqClient, type GroqChatResult } from '../src/groq.js';
 import { SarvamClient } from '../src/sarvam.js';
 import type { DialogueSession } from '../src/session.js';
@@ -32,6 +33,12 @@ export function mockHms() {
     .fn()
     .mockResolvedValue({ success: true, message: 'Your appointment request has been received.', appointmentId: 'a-1', patientId: 'p-1', isReminderSent: true });
   return hms;
+}
+
+export function mockRetriever(results: HybridSearchResult[] = []) {
+  const retriever = Object.create(HybridRetriever.prototype) as HybridRetriever;
+  retriever.search = vi.fn().mockResolvedValue(results);
+  return retriever;
 }
 
 export function baseSession(overrides: Partial<DialogueSession> = {}): DialogueSession {

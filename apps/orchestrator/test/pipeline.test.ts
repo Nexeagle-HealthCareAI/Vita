@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import { FAQ_DOCS } from '@vita/rag';
 import { runTurn } from '../src/pipeline.js';
 import { type GroqChatResult } from '../src/groq.js';
-import { mockGroq, mockSarvam, mockHms, baseSession } from './helpers.js';
+import { mockGroq, mockSarvam, mockHms, mockRetriever, baseSession } from './helpers.js';
 
 describe('runTurn — scripted conversation (golden-fixture style, per docs/BUILD_GUIDE.md §3.5)', () => {
   it('a transcript that needs a tool call: Groq requests availability, gets shifts (not slots), replies, then speaks it', async () => {
@@ -153,5 +154,25 @@ describe('runTurn — round cap (a live call must never hang)', () => {
     expect(result.replyText).toMatch(/trouble completing|repeat/i);
     // Exactly 3 rounds of groq.chat -- the cap, not unbounded.
     expect((groq.chat as ReturnType<typeof vi.fn>).mock.calls.length).toBe(3);
+  });
+});
+
+describe('runTurn — search_vita_faq (generic questions about Vita itself, not 1HMS data)', () => {
+  it('Groq requests the FAQ tool, gets a grounded answer, and phrases a reply from it', async () => {
+    const doc = FAQ_DOCS[0]!;
+    const groq = mockGroq([
+      { content: null, toolCalls: [{ id: 'call_1', name: 'search_vita_faq', arguments: { query: doc.question } }] },
+      { content: `${doc.answer}`, toolCalls: [] },
+    ]);
+    const sarvam = mockSarvam();
+    const hms = mockHms();
+    const retriever = mockRetriever([{ id: doc.id, text: 'irrelevant raw blob', score: 0.9 }]);
+
+    const result = await runTurn({ session: baseSession(), transcript: doc.question, groq, sarvam, hms, retriever });
+
+    expect(result.toolCallsExecuted).toEqual(['search_vita_faq']);
+    expect(retriever.search).toHaveBeenCalledWith(doc.question, 3);
+    expect(result.replyText).toBe(doc.answer);
+    expect(sarvam.synthesize).toHaveBeenCalledWith(doc.answer);
   });
 });

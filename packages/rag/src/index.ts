@@ -1,6 +1,9 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
 import { BM25, type BM25Doc } from './bm25.js';
 
+export { LocalEmbedder, EMBEDDING_DIM } from './embedder.js';
+export { FAQ_DOCS, faqEmbedText, type FaqDoc } from './faqData.js';
+
 export interface HybridSearchResult {
   id: string;
   text: string;

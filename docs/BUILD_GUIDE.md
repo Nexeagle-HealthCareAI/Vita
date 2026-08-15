@@ -226,19 +226,41 @@ test) that hits staging directly and asserts the response shape still
 matches `RegisterPatientInput`/etc. — run this one in a nightly CI job, not
 on every PR, since it depends on an external staging service being up.
 
-### 3.7 `packages/rag` — BM25 + fusion done; wire embeddings + Qdrant ingestion
+### 3.7 `packages/rag` — FAQ corpus live; lab-rules/insurance-doc corpus still TODO
 
-`BM25` and the reciprocal-rank-fusion hybrid search are implemented and
-tested (`packages/rag/test/bm25.test.ts`). To go live:
+`HybridRetriever` (BM25 + Qdrant dense + reciprocal rank fusion) is implemented and
+tested (`packages/rag/test/bm25.test.ts`, `test/index.test.ts`), and is now wired
+into a real, if deliberately small, first use case: a hand-written FAQ corpus about
+Vita itself (`src/faqData.ts` -- what it is, what it can do, where it runs, etc.),
+retrievable mid-call via the `search_vita_faq` Groq tool
+(`apps/orchestrator/src/tools.ts`, wired through `pipeline.ts`'s `runTurn`).
 
-1. Pick an embedding model (Sarvam or a local sentence-transformer) and
-   implement the `embed` callback passed into `HybridRetriever`.
-2. Write an ingestion script (`packages/rag/src/ingest.ts`, not yet created)
-   that chunks lab-test rules and insurance docs, embeds them, and upserts
-   into Qdrant with the same `id`s used by `indexCorpus`.
-3. **Testing**: a small labeled eval set (10–20 realistic receptionist
-   queries with known-correct doc IDs) scored on precision@5 — this catches
-   retrieval regressions that unit tests on `BM25` alone can't.
+- **Embeddings**: a local, in-process model (`src/embedder.ts`'s `LocalEmbedder`,
+  `@huggingface/transformers`, `Xenova/all-MiniLM-L6-v2`, 384-dim) -- pure JS/WASM,
+  no Python service, no API key, no per-call cost. Lazily loaded on first real
+  `embed()` call; the load promise is cached so concurrent calls share one load.
+- **Ingestion**: `pnpm --filter @vita/rag ingest` (`src/ingest.ts`) creates the
+  `QDRANT_FAQ_COLLECTION` (default `vita_faq`) if missing and upserts each FAQ
+  doc's embedding. Idempotent -- each doc's `id` is a fixed literal UUID (Qdrant
+  only accepts unsigned ints or UUIDs as point ids, not arbitrary strings), so
+  re-running always upserts in place. Must be run at least once against a real
+  Qdrant (`docker compose up -d qdrant`) before `search_vita_faq` has anything to
+  find -- the orchestrator's own boot only rebuilds the cheap in-memory BM25 half
+  from the same `FAQ_DOCS`, it doesn't populate Qdrant.
+- **Testing**: `packages/rag/test/embedder.test.ts` is a genuine exception to this
+  repo's fully-offline test convention -- it does a real (small, free, local) model
+  load + inference. `apps/orchestrator/test/pipeline.test.ts` covers the
+  Groq-requests-the-FAQ-tool round trip with a faked retriever.
+
+**Still not done** (unchanged from before this pass, explicitly future work, not
+silently dropped): the original lab-rules/insurance-doc corpus this section used to
+describe. To build that: pick a chunking strategy for real lab-test rules and
+insurance docs, embed and upsert them the same way `ingest.ts` does for FAQs (a
+second collection, not mixed into `vita_faq`), and add a small labeled eval set
+(10-20 realistic receptionist queries with known-correct doc IDs) scored on
+precision@5 -- retrieval-quality regressions on real documents are exactly what
+`BM25`/`HybridRetriever`'s unit tests can't catch, since those only prove the
+fusion math is correct, not that real embeddings retrieve the right real doc.
 
 ### 3.8 `apps/web-demo` — reference implementation done
 
