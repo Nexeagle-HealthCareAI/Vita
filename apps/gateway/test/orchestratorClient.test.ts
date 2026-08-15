@@ -17,7 +17,12 @@ describe('OrchestratorClient', () => {
       const fetchImpl = fakeFetch({ ok: true, body: { sessionId: 'sess-1', resumeToken: 'tok-1', userId: 'user-1' } });
       const client = new OrchestratorClient('http://orchestrator', fetchImpl);
 
-      const result = await client.createSession({ sessionId: 'sess-1', userId: 'user-1', role: 'ROLE_RECEPTIONIST' });
+      const result = await client.createSession({
+        sessionId: 'sess-1',
+        userId: 'user-1',
+        role: 'ROLE_RECEPTIONIST',
+        consentGiven: true,
+      });
 
       expect(result).toEqual({ sessionId: 'sess-1', resumeToken: 'tok-1' });
     });
@@ -26,7 +31,9 @@ describe('OrchestratorClient', () => {
       const fetchImpl = fakeFetch({ ok: false });
       const client = new OrchestratorClient('http://orchestrator', fetchImpl);
 
-      expect(await client.createSession({ sessionId: 'sess-1', userId: 'user-1', role: 'ROLE_RECEPTIONIST' })).toBeNull();
+      expect(
+        await client.createSession({ sessionId: 'sess-1', userId: 'user-1', role: 'ROLE_RECEPTIONIST', consentGiven: true }),
+      ).toBeNull();
     });
   });
 

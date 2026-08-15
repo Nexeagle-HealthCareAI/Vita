@@ -18,6 +18,7 @@ export interface ResumeIntent {
 export interface RedeemedTicket {
   claims: SessionClaims;
   resumeIntent: ResumeIntent | null;
+  consentGiven: boolean;
 }
 
 interface TicketRecord {
@@ -25,6 +26,7 @@ interface TicketRecord {
   expiresAt: number;
   redeemed: boolean;
   resumeIntent: ResumeIntent | null;
+  consentGiven: boolean;
 }
 
 /**
@@ -36,7 +38,12 @@ const tickets = new Map<string, TicketRecord>();
 
 const TICKET_TTL_MS = Number(process.env.TICKET_TTL_SECONDS ?? 30) * 1000;
 
-export function verifyJwtAndIssueTicket(bearerToken: string, secret: string, resumeIntent?: ResumeIntent): string {
+export function verifyJwtAndIssueTicket(
+  bearerToken: string,
+  secret: string,
+  resumeIntent?: ResumeIntent,
+  consentGiven = false,
+): string {
   // Role and identity come ONLY from the verified JWT — never from anything
   // the client sends alongside it. This is what closes the privilege-
   // escalation gap from the v1.0 draft, where `role` was a client-supplied
@@ -48,6 +55,7 @@ export function verifyJwtAndIssueTicket(bearerToken: string, secret: string, res
     expiresAt: Date.now() + TICKET_TTL_MS,
     redeemed: false,
     resumeIntent: resumeIntent ?? null,
+    consentGiven,
   });
   return ticket;
 }
@@ -61,7 +69,7 @@ export function redeemTicket(ticket: string): RedeemedTicket | null {
   }
   record.redeemed = true;
   tickets.delete(ticket); // single-use
-  return { claims: record.claims, resumeIntent: record.resumeIntent };
+  return { claims: record.claims, resumeIntent: record.resumeIntent, consentGiven: record.consentGiven };
 }
 
 export function _clearTicketsForTests(): void {

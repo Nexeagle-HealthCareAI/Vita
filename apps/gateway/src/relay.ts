@@ -39,6 +39,11 @@ export interface RelayDeps {
   orchestrator: OrchestratorClient;
   backendFactory: TurnBackendFactory;
   claims: SessionClaims;
+  /** From the redeemed ticket (see ticket.ts). Optional/defaults to false purely so
+   * existing test literals that predate this field keep compiling -- real production
+   * wiring (index.ts) always supplies it explicitly. Forwarded to the orchestrator's
+   * POST /session on a fresh session only; resume never re-proves consent. */
+  consentGiven?: boolean;
   send: (data: string | Uint8Array) => void;
   /** Severs the underlying transport. Optional (mirrors `log?`) -- existing unit tests
    * that don't care about socket lifecycle can omit it. Production wiring (index.ts) sets
@@ -117,6 +122,7 @@ export class ConnectionRelay {
         sessionId: randomUUID(),
         userId: this.deps.claims.sub,
         role: this.deps.claims.role,
+        consentGiven: this.deps.consentGiven ?? false,
       });
       if (!created) return false;
       established = { ...created, resumed: false };

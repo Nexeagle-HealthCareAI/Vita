@@ -368,8 +368,14 @@ place of the shared-VM reverse proxy in §4.3. Not required for Phase 1 launch.
       to a durable, queryable store with a defined retention period
 - [ ] Define and implement an audio retention/purge policy — how long raw
       PCM audio is kept after Sarvam STT processing, and where
-- [ ] DPDPA-aligned consent notice in the web UI before a voice session
-      starts
+- [x] DPDPA-aligned consent notice in the web UI before a voice session
+      starts — `ReceptionistDashboard.tsx`'s consent modal gates
+      `sdk.startSession(consentGiven)`; the flag rides the existing ticket
+      exchange (`@vita/web-sdk` → gateway `POST /session/ticket` → WS →
+      `ConnectionRelay`) to the orchestrator's `POST /session`, the one place
+      it's actually enforced (400 + a `consent_missing`/denied audit line if
+      absent) and audited (`consent_given`/success otherwise) via the
+      existing `recordAuditEvent`
 - [ ] Review 1HMS API access scoping — `HMS_API_KEY` in this service should
       have the minimum permissions `register_patient`/`check_slot_availability`/
       `book_appointment` actually need, not full API access

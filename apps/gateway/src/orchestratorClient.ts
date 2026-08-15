@@ -2,6 +2,7 @@ export interface CreateSessionInput {
   sessionId: string;
   userId: string;
   role: 'ROLE_RECEPTIONIST' | 'ROLE_DOCTOR';
+  consentGiven: boolean;
 }
 
 export interface TurnAudioResult {

@@ -11,6 +11,8 @@ export function ReceptionistDashboard() {
   });
   const [lastError, setLastError] = useState<string | null>(null);
   const [sdk, setSdk] = useState<VitaWebSDK | null>(null);
+  const [hasConsented, setHasConsented] = useState(false);
+  const [showConsentModal, setShowConsentModal] = useState(false);
 
   useEffect(() => {
     const instance = new VitaWebSDK({
@@ -64,7 +66,15 @@ export function ReceptionistDashboard() {
       </form>
 
       <button
-        onClick={() => (isListening ? sdk?.stopSession() : sdk?.startSession())}
+        onClick={() => {
+          if (isListening) {
+            sdk?.stopSession();
+          } else if (hasConsented) {
+            void sdk?.startSession(true);
+          } else {
+            setShowConsentModal(true);
+          }
+        }}
         style={{
           marginTop: 16,
           padding: '12px 24px',
@@ -77,6 +87,78 @@ export function ReceptionistDashboard() {
       >
         {isListening ? 'Stop Listening' : 'Talk to Vita'}
       </button>
+
+      {showConsentModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="consent-heading"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 16,
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: '#fff',
+              borderRadius: 8,
+              padding: 24,
+              maxWidth: 420,
+              boxShadow: '0 4px 24px rgba(0, 0, 0, 0.2)',
+            }}
+          >
+            <h3 id="consent-heading" style={{ marginTop: 0 }}>
+              Before we start
+            </h3>
+            <p style={{ fontSize: 14, lineHeight: 1.5 }}>
+              Vita will listen to your voice and process it — including sending audio to our
+              speech-recognition and text-to-speech providers — to answer questions, check
+              doctor availability, and (for this registration counter) autofill patient
+              details. A transcript and an audit record of actions taken during this call are
+              kept as part of the hospital&apos;s records, in line with the Digital Personal
+              Data Protection Act, 2023.
+            </p>
+            <p style={{ fontSize: 14, lineHeight: 1.5 }}>Do you consent to this call being recorded and processed?</p>
+            <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end', marginTop: 16 }}>
+              <button
+                onClick={() => setShowConsentModal(false)}
+                style={{
+                  padding: '8px 16px',
+                  backgroundColor: '#fff',
+                  color: '#333',
+                  border: '1px solid #ccc',
+                  borderRadius: 4,
+                  cursor: 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setHasConsented(true);
+                  setShowConsentModal(false);
+                  void sdk?.startSession(true);
+                }}
+                style={{
+                  padding: '8px 16px',
+                  backgroundColor: '#0066cc',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 4,
+                  cursor: 'pointer',
+                }}
+              >
+                Accept &amp; Start
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

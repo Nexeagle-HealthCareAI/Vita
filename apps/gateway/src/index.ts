@@ -88,13 +88,18 @@ export function buildServer(deps?: {
     if (!auth?.startsWith('Bearer ')) {
       return reply.code(401).send({ error: 'missing bearer token' });
     }
-    const body = (req.body ?? {}) as { resumeSessionId?: string; resumeToken?: string };
+    const body = (req.body ?? {}) as { resumeSessionId?: string; resumeToken?: string; consentGiven?: boolean };
     const resumeIntent: ResumeIntent | undefined =
       sessionResumeEnabled() && body.resumeSessionId && body.resumeToken
         ? { sessionId: body.resumeSessionId, resumeToken: body.resumeToken }
         : undefined;
     try {
-      const ticket = verifyJwtAndIssueTicket(auth.slice('Bearer '.length), JWT_SECRET, resumeIntent);
+      const ticket = verifyJwtAndIssueTicket(
+        auth.slice('Bearer '.length),
+        JWT_SECRET,
+        resumeIntent,
+        body.consentGiven === true,
+      );
       return reply.send({ ticket });
     } catch {
       return reply.code(401).send({ error: 'invalid token' });
@@ -116,7 +121,7 @@ export function buildServer(deps?: {
         socket.close(4001, 'invalid or expired ticket');
         return;
       }
-      const { claims, resumeIntent } = redeemed;
+      const { claims, resumeIntent, consentGiven } = redeemed;
 
       req.log.info({ sub: claims.sub, role: claims.role, resuming: !!resumeIntent }, 'session established');
 
@@ -141,6 +146,7 @@ export function buildServer(deps?: {
           orchestrator,
           backendFactory,
           claims,
+          consentGiven,
           send: (data) => socket.send(data),
           close: () => socket.close(4009, 'session resumed on a new connection'),
           log: req.log,

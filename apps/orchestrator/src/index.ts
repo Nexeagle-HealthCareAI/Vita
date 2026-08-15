@@ -106,7 +106,30 @@ export function buildServer(
   // /session/:id/turn below for the actual STT -> LLM -> MCP -> TTS pipeline
   // (pipeline.ts's runTurn) this session then gets used with.
   app.post('/session', async (req, reply) => {
-    const body = req.body as { sessionId: string; userId: string; role: Role };
+    const body = req.body as { sessionId: string; userId: string; role: Role; consentGiven?: boolean };
+    // The one authoritative choke point for the DPDPA consent gate (docs/BUILD_GUIDE.md
+    // §6) -- everything upstream (web-sdk, gateway ticket/relay) is a passthrough. A
+    // resumed session never re-proves consent here since /session/:id/resume is a
+    // separate route that only reattaches to a session that already passed this check.
+    if (body.consentGiven !== true) {
+      recordAuditEvent({
+        ts: Date.now(),
+        sessionId: body.sessionId,
+        userId: body.userId,
+        role: body.role,
+        action: 'consent_missing',
+        outcome: 'denied',
+      });
+      return reply.code(400).send({ error: 'consent required before a session can start' });
+    }
+    recordAuditEvent({
+      ts: Date.now(),
+      sessionId: body.sessionId,
+      userId: body.userId,
+      role: body.role,
+      action: 'consent_given',
+      outcome: 'success',
+    });
     const session = await sessions.create({
       sessionId: body.sessionId,
       userId: body.userId,

@@ -48,7 +48,7 @@ async function createSession(app: ReturnType<typeof buildServer>) {
   await app.inject({
     method: 'POST',
     url: '/session',
-    payload: { sessionId: 'sess-1', userId: 'user-1', role: 'ROLE_RECEPTIONIST' },
+    payload: { sessionId: 'sess-1', userId: 'user-1', role: 'ROLE_RECEPTIONIST', consentGiven: true },
   });
 }
 

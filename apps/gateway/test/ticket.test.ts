@@ -12,7 +12,11 @@ describe('ticket issuance & redemption', () => {
     const ticket = verifyJwtAndIssueTicket(token, SECRET);
 
     const redeemed = redeemTicket(ticket);
-    expect(redeemed).toEqual({ claims: { sub: 'user-1', role: 'ROLE_RECEPTIONIST' }, resumeIntent: null });
+    expect(redeemed).toEqual({
+      claims: { sub: 'user-1', role: 'ROLE_RECEPTIONIST' },
+      resumeIntent: null,
+      consentGiven: false,
+    });
 
     // single-use: second redemption must fail
     expect(redeemTicket(ticket)).toBeNull();
@@ -40,5 +44,15 @@ describe('ticket issuance & redemption', () => {
     const ticket = verifyJwtAndIssueTicket(token, SECRET, { sessionId: 's1', resumeToken: 'tok-1' });
 
     expect(redeemTicket(ticket)?.resumeIntent).toEqual({ sessionId: 's1', resumeToken: 'tok-1' });
+  });
+
+  it('defaults consentGiven to false when not passed, and carries true through when it is', () => {
+    const token = jwt.sign({ sub: 'user-1', role: 'ROLE_RECEPTIONIST' }, SECRET);
+
+    const withoutConsent = verifyJwtAndIssueTicket(token, SECRET);
+    expect(redeemTicket(withoutConsent)?.consentGiven).toBe(false);
+
+    const withConsent = verifyJwtAndIssueTicket(token, SECRET, undefined, true);
+    expect(redeemTicket(withConsent)?.consentGiven).toBe(true);
   });
 });

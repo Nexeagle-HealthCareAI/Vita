@@ -50,12 +50,25 @@ export class TeraWebSDK {
   // be resumed afterward.
   private resumeSessionId: string | null = null;
   private resumeToken: string | null = null;
+  // Set only past startSession()'s consent guard; read by fetchTicket() (so the gateway/
+  // orchestrator can audit it) and by scheduleReconnect() (so an automatic reconnect of an
+  // already-consented session doesn't silently downgrade to no-consent). Reset on
+  // stopSession() -- a fresh explicit start must re-assert consent, same as resumeToken.
+  private consentGiven = false;
 
   constructor(config: TeraConfig) {
     this.config = config;
   }
 
-  public async startSession(): Promise<void> {
+  /** consentGiven is required (no default) so every call site -- including future ones --
+   * has to make an explicit choice rather than silently starting without it. False blocks
+   * the call entirely: no ticket fetch, no WS, no mic prompt. */
+  public async startSession(consentGiven: boolean): Promise<void> {
+    if (!consentGiven) {
+      this.emitError('CONSENT_REQUIRED', new Error('startSession() called without user consent'), /* recoverable */ false);
+      return;
+    }
+    this.consentGiven = true;
     this.userInitiatedStop = false;
     this.torn_down = false;
     try {
@@ -71,9 +84,13 @@ export class TeraWebSDK {
    * proxy logs -- a held resume pair rides the same HTTPS-protected body, for the same
    * reason (see docs/ARCHITECTURE.md's SESSION_RESUME notes). Only sent if BOTH fields are
    * held; the gateway treats an absent/incomplete pair as "start a fresh session," so an
-   * old/unmodified SDK build (which never sends either field) is unaffected. */
+   * old/unmodified SDK build (which never sends either field) is unaffected. consentGiven
+   * is always true here (startSession()'s guard already returned otherwise) -- sent
+   * explicitly so the gateway/orchestrator have a real value to audit rather than assuming. */
   private async fetchTicket(): Promise<string> {
-    const requestBody: { resumeSessionId?: string; resumeToken?: string } = {};
+    const requestBody: { resumeSessionId?: string; resumeToken?: string; consentGiven: boolean } = {
+      consentGiven: this.consentGiven,
+    };
     if (this.resumeSessionId && this.resumeToken) {
       requestBody.resumeSessionId = this.resumeSessionId;
       requestBody.resumeToken = this.resumeToken;
@@ -139,7 +156,7 @@ export class TeraWebSDK {
     this.reconnectAttempt++;
     setTimeout(() => {
       if (this.userInitiatedStop || this.torn_down) return;
-      void this.startSession();
+      void this.startSession(this.consentGiven);
     }, delay);
   }
 
@@ -235,6 +252,7 @@ export class TeraWebSDK {
     this.userInitiatedStop = true;
     this.resumeSessionId = null;
     this.resumeToken = null; // an explicit hangup must never be resumable afterward
+    this.consentGiven = false; // a fresh explicit start must re-assert consent
     this.teardownAudio();
     this.ws?.close();
     this.ws = null;

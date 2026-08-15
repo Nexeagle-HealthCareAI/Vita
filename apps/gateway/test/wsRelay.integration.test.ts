@@ -116,7 +116,12 @@ describe('gateway WS relay -- one happy-path utterance, end to end through real 
       setTimeout(() => reject(new Error('timed out waiting for the relay round trip')), 5000);
     });
 
-    expect(orchestrator.createSession).toHaveBeenCalledWith({ sessionId: expect.any(String), userId: 'user-1', role: 'ROLE_RECEPTIONIST' });
+    expect(orchestrator.createSession).toHaveBeenCalledWith({
+      sessionId: expect.any(String),
+      userId: 'user-1',
+      role: 'ROLE_RECEPTIONIST',
+      consentGiven: false,
+    });
     expect(orchestrator.postAudioTurn).toHaveBeenCalledTimes(1);
     expect(received).toEqual([
       { event: 'SESSION_READY', sessionId: 'sess-1', resumeToken: 'resume-tok-1', resumed: false },

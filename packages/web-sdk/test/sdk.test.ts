@@ -56,7 +56,7 @@ describe('TeraWebSDK — ticket fetch & error handling', () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 401 });
 
     const sdk = new TeraWebSDK({ ...baseConfig, onError });
-    await sdk.startSession();
+    await sdk.startSession(true);
 
     expect(onError).toHaveBeenCalledWith(
       expect.objectContaining({ code: 'TICKET_FETCH_FAILED', recoverable: true }),
@@ -75,12 +75,23 @@ describe('TeraWebSDK — ticket fetch & error handling', () => {
     const onStateChange = vi.fn();
     const sdk = new TeraWebSDK({ ...baseConfig, onStateChange });
 
-    await sdk.startSession();
+    await sdk.startSession(true);
     sdk.stopSession();
     sdk.stopSession(); // second call must be a no-op, not throw or double-fire IDLE
 
     const idleCalls = onStateChange.mock.calls.filter(([s]) => s === 'IDLE');
     expect(idleCalls.length).toBe(1);
+  });
+
+  it('startSession(false) never fetches a ticket -- blocks with a non-recoverable CONSENT_REQUIRED error instead', async () => {
+    const onError = vi.fn();
+    global.fetch = vi.fn();
+    const sdk = new TeraWebSDK({ ...baseConfig, onError });
+
+    await sdk.startSession(false);
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ code: 'CONSENT_REQUIRED', recoverable: false }));
   });
 });
 
@@ -107,16 +118,16 @@ describe('TeraWebSDK — SESSION_RESUME (resume credentials across a reconnect)'
     global.fetch = fetchOkWithTicket();
     const sdk = new TeraWebSDK(baseConfig);
 
-    await sdk.startSession();
+    await sdk.startSession(true);
 
-    expect(lastFetchBody()).toEqual({});
+    expect(lastFetchBody()).toEqual({ consentGiven: true });
   });
 
   it('a SESSION_READY message stores resumeSessionId/resumeToken, and the next fetchTicket() call includes them', async () => {
     global.fetch = fetchOkWithTicket();
     const sdk = new TeraWebSDK(baseConfig);
 
-    await sdk.startSession();
+    await sdk.startSession(true);
     const ws = FakeWebSocket.instances[0];
     ws.onmessage?.({ data: JSON.stringify({ event: 'SESSION_READY', sessionId: 'sess-1', resumeToken: 'tok-1', resumed: false }) });
 
@@ -125,21 +136,21 @@ describe('TeraWebSDK — SESSION_RESUME (resume credentials across a reconnect)'
     ws.onclose?.({ code: 1006 });
     await vi.advanceTimersByTimeAsync(500);
 
-    expect(lastFetchBody()).toEqual({ resumeSessionId: 'sess-1', resumeToken: 'tok-1' });
+    expect(lastFetchBody()).toEqual({ resumeSessionId: 'sess-1', resumeToken: 'tok-1', consentGiven: true });
   });
 
   it('stopSession() clears resume credentials -- a subsequent startSession() sends none', async () => {
     global.fetch = fetchOkWithTicket();
     const sdk = new TeraWebSDK(baseConfig);
 
-    await sdk.startSession();
+    await sdk.startSession(true);
     const ws = FakeWebSocket.instances[0];
     ws.onmessage?.({ data: JSON.stringify({ event: 'SESSION_READY', sessionId: 'sess-1', resumeToken: 'tok-1', resumed: false }) });
 
     sdk.stopSession();
-    await sdk.startSession();
+    await sdk.startSession(true);
 
-    expect(lastFetchBody()).toEqual({});
+    expect(lastFetchBody()).toEqual({ consentGiven: true });
   });
 
   it('onSessionResumed fires with the resumed flag from SESSION_READY', async () => {
@@ -147,7 +158,7 @@ describe('TeraWebSDK — SESSION_RESUME (resume credentials across a reconnect)'
     const onSessionResumed = vi.fn();
     const sdk = new TeraWebSDK({ ...baseConfig, onSessionResumed });
 
-    await sdk.startSession();
+    await sdk.startSession(true);
     const ws = FakeWebSocket.instances[0];
     ws.onmessage?.({ data: JSON.stringify({ event: 'SESSION_READY', sessionId: 'sess-1', resumeToken: 'tok-1', resumed: true }) });
 
