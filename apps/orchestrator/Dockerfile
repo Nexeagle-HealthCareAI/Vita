@@ -2,7 +2,7 @@ FROM node:20-slim AS build
 WORKDIR /repo
 COPY . .
 RUN corepack enable && pnpm install --frozen-lockfile
-RUN pnpm --filter @vita/protocol build && pnpm --filter @vita/mcp-1hms build && pnpm --filter @vita/orchestrator build
+RUN pnpm --filter @vita/protocol build && pnpm --filter @vita/mcp-1hms build && pnpm --filter @vita/rag build && pnpm --filter @vita/orchestrator build
 # `pnpm deploy` resolves every workspace dependency (e.g. @vita/protocol and
 # @vita/mcp-1hms's own runtime deps like zod and @modelcontextprotocol/sdk,
 # none of which are hoisted to the repo-root node_modules) into real files
