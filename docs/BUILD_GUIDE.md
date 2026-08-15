@@ -215,16 +215,32 @@ assert the resulting sequence of emitted events (slot fills, tool calls,
 kill the Redis connection mid-session and confirm the orchestrator surfaces
 a recoverable `ERROR` event rather than hanging.
 
-### 3.6 `packages/mcp-1hms` — client done, tool schemas done; point at real 1HMS
+### 3.6 `packages/mcp-1hms` — client, tool schemas, and contract test all done
 
-`HmsClient` and the three MCP tools (`register_patient`,
-`check_slot_availability`, `book_appointment`) are implemented and unit
-tested against a mocked `fetch` (`packages/mcp-1hms/test/hmsClient.test.ts`).
-Set `HMS_API_BASE_URL`/`HMS_API_KEY` to your real `easyHMSAPI` staging
-environment and add a **contract test** (separate from the mocked unit
-test) that hits staging directly and asserts the response shape still
-matches `RegisterPatientInput`/etc. — run this one in a nightly CI job, not
-on every PR, since it depends on an external staging service being up.
+`HmsClient` and the three MCP tools (`find_doctors`, `check_doctor_availability`,
+`book_appointment` — reshaped from an earlier, more aspirational naming;
+there's no standalone patient-registration endpoint and no slot-reservation
+system, only shift-window availability) are implemented and unit tested
+against a mocked `fetch` (`packages/mcp-1hms/test/hmsClient.test.ts`).
+
+A separate **contract test** (`packages/mcp-1hms/test/hmsClient.contract.test.ts`)
+hits a real, live `easyHMSAPI` instance — no mocking — and asserts the
+response shapes `HmsClient` expects still hold, including one real write
+(`bookAppointment`, using an unmistakably-labeled fake patient identity so
+any accumulated rows stay greppable/deletable). It defaults to the shared
+dev environment (`http://151.185.45.77:5001`) but honors
+`HMS_API_BASE_URL`/`HMS_API_KEY` overrides. `.env.example`'s
+`HMS_API_BASE_URL` deliberately stays a non-functional placeholder — the
+contract test's own default covers this independently, and defaulting
+`.env.example` itself to the shared dev URL would silently point every
+local orchestrator at shared team infrastructure.
+
+Run on demand via `pnpm --filter @vita/mcp-1hms test:contract` (uses
+`vitest.contract.config.ts`; the default `vitest.config.ts` excludes this
+file from `pnpm test`/CI's `node` job). Wired into CI as the
+`mcp-1hms-contract` job, gated to the nightly `schedule` trigger (03:00 UTC)
+plus `workflow_dispatch` only — never on a PR, since it depends on an
+external service being up and performs a real write.
 
 ### 3.7 `packages/rag` — FAQ corpus live; lab-rules/insurance-doc corpus still TODO
 

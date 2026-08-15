@@ -5,12 +5,22 @@ on:
   push:
     branches: [develop, main]
   # Lets a maintainer manually run the real-model audio-preprocess suite (see the
-  # audio-preprocess-slow job below) on demand, without needing local Python/torch/Rust
-  # setup -- never fires on its own, never blocks a PR.
+  # audio-preprocess-slow job below) or the 1HMS contract test on demand, without
+  # needing local Python/torch/Rust setup or waiting for the nightly schedule below --
+  # never fires on its own, never blocks a PR.
   workflow_dispatch:
+  # Drives mcp-1hms-contract only (see that job) -- a real check against a real external
+  # service belongs on a schedule, not gating every PR. 03:00 UTC ~= off-peak for both
+  # India and US audiences.
+  schedule:
+    - cron: '0 3 * * *'
 
 jobs:
+  # The nightly `schedule` trigger above exists only to drive mcp-1hms-contract -- every
+  # other job here stays PR/push/manual-only (`schedule` firing them too would just be
+  # wasted CI minutes re-running things nothing changed for).
   node:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,6 +41,7 @@ jobs:
       - run: pnpm test:ci
 
   audio-preprocess:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -72,6 +83,7 @@ jobs:
       - run: python -m pytest -q -m slow
 
   web-demo-e2e:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     needs: node
     steps:
@@ -89,3 +101,25 @@ jobs:
       - run: pnpm --filter @vita/web-sdk build
       - run: pnpm --filter @vita/web-demo exec playwright install --with-deps chromium
       - run: pnpm --filter @vita/web-demo test
+
+  # Real, live easyHMSAPI contract test (packages/mcp-1hms/test/hmsClient.contract.test.ts)
+  # -- catches drift if easyHMSAPI's /public/* surface changes, something the mocked
+  # hmsClient.test.ts can't. Nightly (see the `schedule` trigger above) + on-demand only:
+  # depends on an external dev service being up, and its bookAppointment case is a real
+  # write, so it must never gate a PR. No HMS_API_BASE_URL/HMS_API_KEY set here
+  # deliberately -- the test file's own default (the real dev easyHMSAPI) already covers
+  # this; setting an empty-string env var here (e.g. from an unconfigured `vars.*`) would
+  # silently defeat that default, since JS's `??` only falls back on null/undefined, not
+  # `""`. Add real secrets/vars here only once there's an actual different target to use.
+  mcp-1hms-contract:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @vita/mcp-1hms test:contract

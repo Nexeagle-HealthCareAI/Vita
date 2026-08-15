@@ -2,7 +2,7 @@
   "name": "@vita/mcp-1hms",
   "version": "0.1.0",
   "private": true,
-  "description": "MCP server exposing 1HMS APIs as tools: register_patient, check_slot_availability, book_appointment",
+  "description": "MCP server exposing 1HMS APIs as tools: find_doctors, check_doctor_availability, book_appointment",
   "type": "module",
   "main": "./dist/index.js",
   "scripts": {
@@ -12,6 +12,7 @@
     "lint": "eslint src",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest",
+    "test:contract": "vitest run --config vitest.contract.config.ts",
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {
