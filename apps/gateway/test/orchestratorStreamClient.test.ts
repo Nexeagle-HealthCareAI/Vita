@@ -7,6 +7,7 @@ function fakeCallbacks(): OrchestratorStreamCallbacks {
   return {
     onPartialTranscript: vi.fn(),
     onFinalTranscript: vi.fn(),
+    onReplyText: vi.fn(),
     onReplyAudio: vi.fn(),
     onTurnError: vi.fn(),
     onDisconnected: vi.fn(),
@@ -82,7 +83,7 @@ describe('OrchestratorStreamClient', () => {
     expect(outcome).toBe('unavailable');
   });
 
-  it('routes transcript.partial/transcript.final/turn.error and binary AUDIO_OUTPUT_PCM16 to the right callbacks', async () => {
+  it('routes transcript.partial/transcript.final/turn.reply/turn.error and binary AUDIO_OUTPUT_PCM16 to the right callbacks', async () => {
     let serverSocket: WsWebSocket;
     wss.once('connection', (socket) => {
       serverSocket = socket;
@@ -94,12 +95,14 @@ describe('OrchestratorStreamClient', () => {
 
     serverSocket!.send(JSON.stringify({ event: 'transcript.partial', text: 'hel' }));
     serverSocket!.send(JSON.stringify({ event: 'transcript.final', text: 'hello' }));
+    serverSocket!.send(JSON.stringify({ event: 'turn.reply', text: 'hi there' }));
     serverSocket!.send(JSON.stringify({ event: 'turn.error', code: 'TURN_FAILED', message: 'boom', recoverable: true }));
     serverSocket!.send(encodeBinaryFrame(BinaryFrameType.AUDIO_OUTPUT_PCM16, new Uint8Array([1, 2, 3])));
 
     await vi.waitFor(() => expect(callbacks.onReplyAudio).toHaveBeenCalled());
     expect(callbacks.onPartialTranscript).toHaveBeenCalledWith('hel');
     expect(callbacks.onFinalTranscript).toHaveBeenCalledWith('hello');
+    expect(callbacks.onReplyText).toHaveBeenCalledWith('hi there');
     expect(callbacks.onTurnError).toHaveBeenCalledWith('TURN_FAILED', 'boom', true);
     expect(callbacks.onReplyAudio).toHaveBeenCalledWith(new Uint8Array([1, 2, 3]));
   });

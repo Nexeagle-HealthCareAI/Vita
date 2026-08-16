@@ -22,6 +22,7 @@ type OrchestratorStreamMessage =
   | { event: 'stream.unavailable'; reason: string }
   | { event: 'transcript.partial'; text: string }
   | { event: 'transcript.final'; text: string }
+  | { event: 'turn.reply'; text: string }
   | { event: 'turn.error'; code: string; message: string; recoverable: boolean };
 
 export interface StreamSessionDeps {
@@ -158,6 +159,7 @@ export class StreamSessionHandler {
     }
 
     await this.deps.sessions.update(session.sessionId, { history: result.updatedHistory, turnState: 'IDLE' });
+    this.sendJson({ event: 'turn.reply', text: result.replyText });
     this.socket.send(encodeBinaryFrame(BinaryFrameType.AUDIO_OUTPUT_PCM16, result.audio));
   }
 

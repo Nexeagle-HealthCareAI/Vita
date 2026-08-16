@@ -127,6 +127,7 @@ describe('gateway WS relay -- one happy-path utterance, end to end through real 
       { event: 'SESSION_READY', sessionId: 'sess-1', resumeToken: 'resume-tok-1', resumed: false },
       { event: 'STATE_CHANGE', state: 'PROCESSING' },
       { event: 'TRANSCRIPT', text: 'is dr patel around', is_final: true },
+      { event: 'REPLY_TEXT', text: 'yes, until 5pm' },
       { event: 'STATE_CHANGE', state: 'SPEAKING' },
       { event: 'STATE_CHANGE', state: 'LISTENING' },
     ]);

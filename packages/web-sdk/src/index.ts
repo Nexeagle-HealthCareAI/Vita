@@ -22,6 +22,9 @@ export interface TeraConfig {
   /** Override path to the AudioWorklet module if you're not using the SDK's bundled asset. */
   workletUrl?: string | URL;
   onTranscript?: (text: string, isFinal: boolean) => void;
+  /** The assistant's reply for a turn, as text -- fires once per turn, independently of
+   * (and before) the AUDIO_OUTPUT_PCM16 binary frames that carry its spoken audio. */
+  onReplyText?: (text: string) => void;
   onFormAutofill?: (fields: PatientFormFields) => void;
   onStateChange?: (state: TeraState) => void;
   onError?: (error: { code: string; message: string; recoverable: boolean }) => void;
@@ -181,6 +184,9 @@ export class TeraWebSDK {
     switch (msg.event) {
       case 'TRANSCRIPT':
         this.config.onTranscript?.(msg.text, msg.is_final);
+        break;
+      case 'REPLY_TEXT':
+        this.config.onReplyText?.(msg.text);
         break;
       case 'UI_FORM_AUTOFILL':
         if (this.config.userRole === 'ROLE_RECEPTIONIST') {

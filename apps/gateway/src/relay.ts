@@ -135,6 +135,7 @@ export class ConnectionRelay {
     this.backend = await this.deps.backendFactory.create(this._sessionId, {
       onPartialTranscript: (text) => this.onPartialTranscript(text),
       onFinalTranscript: (text) => this.onFinalTranscript(text),
+      onReplyText: (text) => this.onReplyText(text),
       onReplyAudio: (audio) => this.onReplyAudio(audio),
       onError: (error) => this.onBackendError(error),
     });
@@ -307,6 +308,10 @@ export class ConnectionRelay {
     }
     this.deps.log?.debug({ transcript: text }, 'relay: final transcript received');
     this.sendJson({ event: 'TRANSCRIPT', text, is_final: true });
+  }
+
+  private onReplyText(text: string): void {
+    this.sendJson({ event: 'REPLY_TEXT', text });
   }
 
   private onReplyAudio(audio: Uint8Array): void {

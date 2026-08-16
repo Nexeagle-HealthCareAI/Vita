@@ -26,6 +26,15 @@ describe('server control event schema', () => {
     expect(parsed.success).toBe(true);
   });
 
+  it('accepts a valid REPLY_TEXT event', () => {
+    const parsed = ServerControlEvent.safeParse({ event: 'REPLY_TEXT', text: 'Dr. Patel is in from 9 to 1.' });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('rejects a REPLY_TEXT event missing text', () => {
+    expect(ServerControlEvent.safeParse({ event: 'REPLY_TEXT' }).success).toBe(false);
+  });
+
   it('accepts a CLEAR_PLAYBACK barge-in event', () => {
     const parsed = ServerControlEvent.safeParse({
       event: 'CLEAR_PLAYBACK',

@@ -18,6 +18,7 @@ function fakeEvents(): TurnBackendEvents {
   return {
     onPartialTranscript: vi.fn(),
     onFinalTranscript: vi.fn(),
+    onReplyText: vi.fn(),
     onReplyAudio: vi.fn(),
     onError: vi.fn(),
   };
@@ -69,13 +70,16 @@ describe('StreamingTurnBackend', () => {
     expect(events.onFinalTranscript).toHaveBeenCalledWith('hello');
   });
 
-  it('handlePartialTranscript/handleReplyAudio/handleTurnError route straight through to events', () => {
+  it('handlePartialTranscript/handleReplyText/handleReplyAudio/handleTurnError route straight through to events', () => {
     const stream = fakeStream();
     const events = fakeEvents();
     const backend = new StreamingTurnBackend(stream, events);
 
     backend.handlePartialTranscript('hel');
     expect(events.onPartialTranscript).toHaveBeenCalledWith('hel');
+
+    backend.handleReplyText('hello there');
+    expect(events.onReplyText).toHaveBeenCalledWith('hello there');
 
     backend.handleReplyAudio(new Uint8Array([9]));
     expect(events.onReplyAudio).toHaveBeenCalledWith(new Uint8Array([9]));

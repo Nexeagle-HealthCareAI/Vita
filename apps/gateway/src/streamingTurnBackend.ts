@@ -71,6 +71,10 @@ export class StreamingTurnBackend implements TurnBackend {
     this.events.onFinalTranscript(text);
   }
 
+  handleReplyText(text: string): void {
+    this.events.onReplyText(text);
+  }
+
   handleReplyAudio(audio: Uint8Array): void {
     this.events.onReplyAudio(audio);
   }
@@ -120,6 +124,7 @@ export class DefaultTurnBackendFactory implements TurnBackendFactory {
     const outcome = await stream.connect(sessionId, this.config.connectTimeoutMs, {
       onPartialTranscript: (text) => backend.handlePartialTranscript(text),
       onFinalTranscript: (text) => backend.handleFinalTranscript(text),
+      onReplyText: (text) => backend.handleReplyText(text),
       onReplyAudio: (audio) => backend.handleReplyAudio(audio),
       onTurnError: (code, message, recoverable) => backend.handleTurnError(code, message, recoverable),
       onDisconnected: () => backend.handleDisconnected(),

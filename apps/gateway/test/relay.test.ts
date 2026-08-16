@@ -193,6 +193,7 @@ describe('ConnectionRelay', () => {
       SESSION_READY,
       { event: 'STATE_CHANGE', state: 'PROCESSING' },
       { event: 'TRANSCRIPT', text: 'hello', is_final: true },
+      { event: 'REPLY_TEXT', text: 'hi there' },
       { event: 'STATE_CHANGE', state: 'SPEAKING' },
     ]);
     const binaryFrames = sent.filter((s): s is Uint8Array => s instanceof Uint8Array);

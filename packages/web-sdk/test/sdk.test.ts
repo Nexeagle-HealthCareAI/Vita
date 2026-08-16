@@ -165,3 +165,35 @@ describe('TeraWebSDK — SESSION_RESUME (resume credentials across a reconnect)'
     expect(onSessionResumed).toHaveBeenCalledWith(true);
   });
 });
+
+describe('TeraWebSDK — REPLY_TEXT (the assistant reply, as text)', () => {
+  const baseConfig = {
+    gatewayOrigin: 'https://gateway.vita.hospital',
+    authToken: 'test-jwt',
+    userRole: 'ROLE_RECEPTIONIST' as const,
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    FakeWebSocket.instances = [];
+    // @ts-expect-error -- test double, not a spec-complete WebSocket
+    global.WebSocket = FakeWebSocket;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it('a REPLY_TEXT message calls onReplyText with the reply text', async () => {
+    global.fetch = fetchOkWithTicket();
+    const onReplyText = vi.fn();
+    const sdk = new TeraWebSDK({ ...baseConfig, onReplyText });
+
+    await sdk.startSession(true);
+    const ws = FakeWebSocket.instances[0];
+    ws.onmessage?.({ data: JSON.stringify({ event: 'REPLY_TEXT', text: 'Dr. Patel is in from 9 to 1.' }) });
+
+    expect(onReplyText).toHaveBeenCalledWith('Dr. Patel is in from 9 to 1.');
+  });
+});

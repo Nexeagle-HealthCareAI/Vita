@@ -16,11 +16,13 @@ type OrchestratorStreamMessage =
   | { event: 'stream.unavailable'; reason: string }
   | { event: 'transcript.partial'; text: string }
   | { event: 'transcript.final'; text: string }
+  | { event: 'turn.reply'; text: string }
   | { event: 'turn.error'; code: string; message: string; recoverable: boolean };
 
 export interface OrchestratorStreamCallbacks {
   onPartialTranscript(text: string): void;
   onFinalTranscript(text: string): void;
+  onReplyText(text: string): void;
   onReplyAudio(audio: Uint8Array): void;
   onTurnError(code: string, message: string, recoverable: boolean): void;
   /** Fires on any close/error *after* a successful connect -- never for the initial
@@ -80,6 +82,9 @@ export class OrchestratorStreamClient {
             break;
           case 'transcript.final':
             this.callbacks?.onFinalTranscript(msg.text);
+            break;
+          case 'turn.reply':
+            this.callbacks?.onReplyText(msg.text);
             break;
           case 'turn.error':
             this.callbacks?.onTurnError(msg.code, msg.message, msg.recoverable);

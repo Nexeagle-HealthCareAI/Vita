@@ -17,6 +17,9 @@ export interface TurnBackendEvents {
   /** '' == soft no-op -- VAD armed an utterance but STT heard no words, same convention
    * TurnAudioResult.transcript already uses. */
   onFinalTranscript(text: string): void;
+  /** The assistant's reply as text, fired once per turn alongside (before) onReplyAudio --
+   * lets a host app display what Vita said, not just hear it. */
+  onReplyText(text: string): void;
   /** Whole synthesized reply for the turn; ConnectionRelay.speak() still owns chunking
    * it for browser-facing playback -- see docs/BUILD_GUIDE.md plan notes on why
    * chunking stays there, not here. */
@@ -75,9 +78,11 @@ export class BatchTurnBackend implements TurnBackend {
           return;
         }
         this.events.onFinalTranscript(result.data.transcript);
-        // audioBase64 is null iff transcript === '' (see TurnAudioResponse) -- possibly an
-        // empty string otherwise, which is still a real (silent) reply, not "no reply".
+        // audioBase64/replyText are null iff transcript === '' (see TurnAudioResponse) --
+        // possibly an empty string otherwise, which is still a real (silent) reply, not
+        // "no reply".
         if (result.data.transcript.trim()) {
+          this.events.onReplyText(result.data.replyText!);
           this.events.onReplyAudio(Buffer.from(result.data.audioBase64!, 'base64'));
         }
       },

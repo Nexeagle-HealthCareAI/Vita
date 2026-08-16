@@ -122,6 +122,9 @@ describe('orchestrator streaming STT route (GET /session/:id/stream)', () => {
     await c.waitForEvent('transcript.final');
     expect(c.jsonMessages.find((m) => m.event === 'transcript.final')).toEqual({ event: 'transcript.final', text: 'is dr patel around' });
 
+    await c.waitForEvent('turn.reply');
+    expect(c.jsonMessages.find((m) => m.event === 'turn.reply')).toEqual({ event: 'turn.reply', text: 'Sure, one moment.' });
+
     await vi.waitFor(() => expect(c.binaryFrames.length).toBeGreaterThan(0));
     const { type, payload } = decodeBinaryFrame(c.binaryFrames[0]);
     expect(type).toBe(BinaryFrameType.AUDIO_OUTPUT_PCM16);

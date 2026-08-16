@@ -29,6 +29,15 @@ export const TranscriptEvent = z.object({
   is_final: z.boolean(),
 });
 
+/** [NEW] The assistant's reply text for a turn -- previously only ever synthesized to
+ * audio and played, never handed to the host app as text. Sent once per turn, alongside
+ * (not instead of) the AUDIO_OUTPUT_PCM16 binary frames. Purely additive, see
+ * SessionReadyEvent's doc comment for why this needs no PROTOCOL_VERSION bump. */
+export const ReplyTextEvent = z.object({
+  event: z.literal('REPLY_TEXT'),
+  text: z.string(),
+});
+
 export const FormAutofillEvent = z.object({
   event: z.literal('UI_FORM_AUTOFILL'),
   data: z.record(z.string(), z.unknown()),
@@ -63,6 +72,7 @@ export const SessionReadyEvent = z.object({
 export const ServerControlEvent = z.discriminatedUnion('event', [
   StateChangeEvent,
   TranscriptEvent,
+  ReplyTextEvent,
   FormAutofillEvent,
   ClearPlaybackEvent,
   ErrorEvent,

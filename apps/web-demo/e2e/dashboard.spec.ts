@@ -22,12 +22,31 @@ test('DPDPA consent modal: hidden by default, opens on "Talk to Vita", Cancel di
 
 test('demo JWT field persists a pasted token across a page reload', async ({ page }) => {
   await page.goto('/');
+  // No token stored yet -- the dev panel starts open.
   await page.getByLabel('Demo JWT (local testing only').fill('a-test-token');
   await expect(page.getByLabel('Demo JWT (local testing only')).toHaveValue('a-test-token');
 
   await page.reload();
 
+  // A stored token collapses the dev panel by default -- reopen it before asserting.
+  await page.getByRole('button', { name: 'Dev settings' }).click();
   await expect(page.getByLabel('Demo JWT (local testing only')).toHaveValue('a-test-token');
+});
+
+test('dev settings toggle shows/hides the demo JWT panel', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByLabel('Demo JWT (local testing only')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Hide dev settings' }).click();
+  await expect(page.getByLabel('Demo JWT (local testing only')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Dev settings' }).click();
+  await expect(page.getByLabel('Demo JWT (local testing only')).toBeVisible();
+});
+
+test('conversation history is empty until a turn happens', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByText('Your conversation with Vita will appear here.')).toBeVisible();
 });
 
 test('DPDPA consent modal: Accept & Start dismisses the modal and proceeds past the gate', async ({ page }) => {
