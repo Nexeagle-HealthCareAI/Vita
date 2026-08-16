@@ -364,8 +364,16 @@ place of the shared-VM reverse proxy in §4.3. Not required for Phase 1 launch.
 
 - [ ] Encrypt Redis session data at rest (E2E disk encryption or
       Redis-level encryption)
-- [ ] Move `recordAuditEvent` (`apps/orchestrator/src/audit.ts`) from stdout
-      to a durable, queryable store with a defined retention period
+- [x] Move `recordAuditEvent` (`apps/orchestrator/src/audit.ts`) from stdout
+      to a durable, queryable store with a defined retention period — a new
+      Postgres service (`apps/orchestrator/src/auditStore.ts`'s
+      `PostgresAuditStore`); every existing call site is unchanged, `ts`/
+      `session_id`/etc. are indexed and queryable via SQL, and
+      `initAuditStore()`'s daily purge enforces a 365-day retention
+      (`AUDIT_RETENTION_DAYS`). Requires the `POSTGRES_PASSWORD` GitHub
+      secret to actually persist in deployed environments (see
+      `.github/workflows/deploy.yml`) — degrades safely to the old
+      stdout-only behavior until it's added
 - [ ] Define and implement an audio retention/purge policy — how long raw
       PCM audio is kept after Sarvam STT processing, and where
 - [x] DPDPA-aligned consent notice in the web UI before a voice session

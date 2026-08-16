@@ -20,16 +20,19 @@
     "@vita/rag": "workspace:*",
     "@qdrant/js-client-rest": "^1.12.0",
     "ioredis": "^5.4.1",
+    "pg": "^8.13.1",
     "fastify": "^5.0.0",
     "@fastify/websocket": "^11.0.1",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "ioredis-mock": "^8.9.0",
+    "pg-mem": "^3.0.4",
     "typescript": "^5.6.3",
     "tsx": "^4.19.1",
     "vitest": "^2.1.3",
     "@types/node": "^22.7.5",
+    "@types/pg": "^8.11.10",
     "@types/ws": "^8.5.12"
   }
 }

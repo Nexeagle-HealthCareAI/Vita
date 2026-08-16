@@ -23,6 +23,20 @@ services:
       - qdrant-data:/qdrant/storage
     restart: unless-stopped
 
+  # Durable audit log (docs/BUILD_GUIDE.md §6) -- orchestrator/src/audit.ts writes here
+  # when DATABASE_URL is set (via .env, written by deploy.yml from the POSTGRES_PASSWORD
+  # secret). No port published -- only reachable from other containers on this compose
+  # network, same as Redis/Qdrant here.
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: vita
+      POSTGRES_USER: vita
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
   gateway:
     image: ghcr.io/nexeagle-healthcareai/vita-gateway:${IMAGE_TAG:-latest}
     env_file: .env
@@ -44,6 +58,7 @@ services:
     env_file: .env
     depends_on:
       - redis
+      - postgres
     restart: unless-stopped
 
   audio-preprocess:
@@ -53,3 +68,4 @@ services:
 volumes:
   redis-data:
   qdrant-data:
+  postgres-data:

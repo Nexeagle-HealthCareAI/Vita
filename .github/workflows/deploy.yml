@@ -111,6 +111,11 @@ jobs:
           source: "docker-compose.prod.yml"
           target: "~/vita-deploy"
 
+      # NOTE: POSTGRES_PASSWORD doesn't exist as a GitHub secret yet (as of 2026-08-16) --
+      # until it's added, the postgres container below fails to initialize (empty
+      # password), but this degrades safely: recordAuditEvent()'s fire-and-forget write
+      # (apps/orchestrator/src/audit.ts) just logs a failure and keeps stdout logging as
+      # before -- the rest of the stack (gateway health check, live calls) is unaffected.
       - name: Write .env, pull, and restart the stack
         uses: appleboy/ssh-action@v1.2.0
         with:
@@ -135,6 +140,9 @@ jobs:
             HMS_API_KEY=${{ secrets.HMS_API_KEY }}
             REDIS_URL=redis://redis:6379
             QDRANT_URL=http://qdrant:6333
+            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+            DATABASE_URL=postgres://vita:${{ secrets.POSTGRES_PASSWORD }}@postgres:5432/vita
+            AUDIT_RETENTION_DAYS=365
             ORCHESTRATOR_INTERNAL_URL=http://orchestrator:8081
             AUDIO_PREPROCESS_URL=http://audio-preprocess:8090
             EOF
@@ -216,6 +224,9 @@ jobs:
             HMS_API_KEY=${{ secrets.HMS_API_KEY }}
             REDIS_URL=redis://redis:6379
             QDRANT_URL=http://qdrant:6333
+            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+            DATABASE_URL=postgres://vita:${{ secrets.POSTGRES_PASSWORD }}@postgres:5432/vita
+            AUDIT_RETENTION_DAYS=365
             ORCHESTRATOR_INTERNAL_URL=http://orchestrator:8081
             AUDIO_PREPROCESS_URL=http://audio-preprocess:8090
             EOF

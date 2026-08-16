@@ -6,7 +6,7 @@ import { HmsClient } from '@vita/mcp-1hms';
 import { HybridRetriever, LocalEmbedder, FAQ_DOCS, faqEmbedText } from '@vita/rag';
 import { SessionStore } from './session.js';
 import { assertToolPermission, ForbiddenError, type Role } from './rbac.js';
-import { recordAuditEvent } from './audit.js';
+import { recordAuditEvent, initAuditStore } from './audit.js';
 import { GroqClient } from './groq.js';
 import { SarvamClient } from './sarvam.js';
 import { runTurn } from './pipeline.js';
@@ -375,6 +375,11 @@ function errMessage(err: unknown): string {
 
 if (process.env.NODE_ENV !== 'test') {
   const app = buildServer();
+  // Fire-and-forget: schema creation + the retention purge loop for the durable audit
+  // store (docs/BUILD_GUIDE.md §6) -- a no-op if DATABASE_URL isn't configured, so this
+  // never blocks/fails startup. Deliberately not called from buildServer() itself, which
+  // every test also calls -- keeps a real Postgres connection out of the test suite.
+  void initAuditStore();
   app.listen({ port: PORT, host: '0.0.0.0' }).catch((err) => {
     app.log.error(err);
     process.exit(1);

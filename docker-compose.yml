@@ -17,6 +17,20 @@ services:
     volumes:
       - qdrant-data:/qdrant/storage
 
+  # Durable audit log (docs/BUILD_GUIDE.md §6) -- orchestrator/src/audit.ts writes here
+  # when DATABASE_URL is set. Dev-only hardcoded password (matches Redis/Qdrant having no
+  # auth in this file either); prod's password comes from the deployed .env instead.
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: vita
+      POSTGRES_USER: vita
+      POSTGRES_PASSWORD: vita-dev-only
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
   gateway:
     build:
       context: .
@@ -36,6 +50,7 @@ services:
     env_file: .env
     depends_on:
       - redis
+      - postgres
 
   audio-preprocess:
     build:
@@ -46,3 +61,4 @@ services:
 volumes:
   redis-data:
   qdrant-data:
+  postgres-data:
