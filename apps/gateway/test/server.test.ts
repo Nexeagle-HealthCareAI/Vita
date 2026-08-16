@@ -35,6 +35,37 @@ describe('gateway HTTP surface', () => {
     expect(res.statusCode).toBe(401);
   });
 
+  describe('CORS (web-sdk is embedded in an arbitrary host app, rarely same-origin)', () => {
+    it('a preflight OPTIONS request for POST /session/ticket is allowed from any origin', async () => {
+      const app = buildServer();
+      const res = await app.inject({
+        method: 'OPTIONS',
+        url: '/session/ticket',
+        headers: {
+          origin: 'http://localhost:5173',
+          'access-control-request-method': 'POST',
+          'access-control-request-headers': 'authorization,content-type',
+        },
+      });
+
+      expect(res.statusCode).toBe(204);
+      expect(res.headers['access-control-allow-origin']).toBe('http://localhost:5173');
+    });
+
+    it('the real POST /session/ticket response also carries the CORS header, not just the preflight', async () => {
+      const app = buildServer();
+      const token = jwt.sign({ sub: 'user-1', role: 'ROLE_RECEPTIONIST' }, JWT_SECRET);
+      const res = await app.inject({
+        method: 'POST',
+        url: '/session/ticket',
+        headers: { authorization: `Bearer ${token}`, origin: 'http://localhost:5173' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['access-control-allow-origin']).toBe('http://localhost:5173');
+    });
+  });
+
   describe('POST /session/ticket resume passthrough', () => {
     afterEach(() => {
       delete process.env.SESSION_RESUME_ENABLED;

@@ -79,6 +79,13 @@ docker compose up -d redis qdrant
 pnpm dev                # gateway + orchestrator + web-demo in parallel (turbo)
 ```
 
+Note: `.env` must actually be at the repo root (not edited into `.env.example`, which is
+git-tracked -- don't put real keys there). `gateway`'s and `orchestrator`'s `dev` scripts
+load it explicitly via `tsx watch --env-file=../../.env` (`tsx`/plain `node` don't auto-load
+`.env` files on their own) -- deployed environments don't need this, since
+`docker-compose.prod.yml`'s `env_file: .env` directive already injects real environment
+variables straight into the container, no file-loading required there.
+
 `apps/web-demo` (`http://localhost:5173`) has no real login -- it has a "Demo JWT" field
 (`ReceptionistDashboard.tsx`) that takes a pasted token instead, persisted to
 `localStorage` so it survives a page refresh. Before clicking "Talk to Vita", mint one

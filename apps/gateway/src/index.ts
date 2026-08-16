@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import websocketPlugin from '@fastify/websocket';
+import corsPlugin from '@fastify/cors';
 import { BinaryFrameType, decodeBinaryFrame } from '@vita/protocol';
 import { redeemTicket, verifyJwtAndIssueTicket, type ResumeIntent } from './ticket.js';
 import { AudioPreprocessClient } from './audioPreprocessClient.js';
@@ -75,6 +76,13 @@ export function buildServer(deps?: {
   const relayConfig = relayConfigFromEnv();
 
   const app = Fastify({ logger: true });
+  // @vita/web-sdk is meant to be embedded in an arbitrary host app's own frontend, which
+  // will almost never share an origin with this gateway -- the real security boundary
+  // here is the bearer JWT verified in /session/ticket below, not same-origin, so
+  // reflecting any origin back is correct (not a wildcard-vs-credentials footgun: the SDK
+  // never sends cookies, only an Authorization header, so credentialed requests are never
+  // in play). Without this, every browser blocks the ticket POST's preflight outright.
+  app.register(corsPlugin, { origin: true });
   app.register(websocketPlugin);
 
   // Step 1: HTTPS ticket exchange. The long-lived JWT is verified here and
