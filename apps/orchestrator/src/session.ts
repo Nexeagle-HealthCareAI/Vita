@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Redis } from 'ioredis';
 import type { ChatMessage } from './groq.js';
+import { deriveKey, encrypt, decrypt } from './sessionCrypto.js';
 
 export type TurnState = 'IDLE' | 'LISTENING' | 'PROCESSING' | 'SPEAKING';
 
@@ -22,6 +23,18 @@ const SESSION_TTL_SECONDS = 60 * 30; // 30 min idle timeout
 const VITA_SESSION_PREFIX = 'vita:session:';
 const LEGACY_SESSION_PREFIX = 'tera:session:';
 
+/** Read fresh on every call (not cached) -- cheap (a hash/buffer conversion, not a
+ * connection), and lets tests toggle SESSION_ENCRYPTION_KEY per-case without stale state.
+ * Unset -> null -> persist()/get() store/read plain JSON, exactly today's behavior
+ * (docs/BUILD_GUIDE.md §6). Whether a key is configured *right now* is what decides how a
+ * value is read -- there's no auto-detection of "is this value encrypted," so flipping the
+ * env var mid-flight makes any session from the old mode unreadable until it expires. That
+ * self-heals within SESSION_TTL_SECONDS (30 min), so no migration logic is needed here. */
+function getEncryptionKey(): Buffer | null {
+  const raw = process.env.SESSION_ENCRYPTION_KEY;
+  return raw ? deriveKey(raw) : null;
+}
+
 /**
  * Redis-backed session store. In Phase 1 this points at a single Redis
  * instance; production should front it with Sentinel (or use a managed
@@ -41,9 +54,10 @@ export class SessionStore {
    * (see its own doc comment below). */
   private async persist(session: Omit<DialogueSession, 'updatedAt'>): Promise<DialogueSession> {
     const full: DialogueSession = { ...session, updatedAt: Date.now() };
-    await Promise.all(
-      this.keys(full.sessionId).map((key) => this.redis.set(key, JSON.stringify(full), 'EX', SESSION_TTL_SECONDS)),
-    );
+    const key = getEncryptionKey();
+    const json = JSON.stringify(full);
+    const payload = key ? encrypt(json, key) : json;
+    await Promise.all(this.keys(full.sessionId).map((k) => this.redis.set(k, payload, 'EX', SESSION_TTL_SECONDS)));
     return full;
   }
 
@@ -54,7 +68,10 @@ export class SessionStore {
   async get(sessionId: string): Promise<DialogueSession | null> {
     const [vitaRaw, legacyRaw] = await Promise.all(this.keys(sessionId).map((key) => this.redis.get(key)));
     const raw = vitaRaw ?? legacyRaw;
-    return raw ? (JSON.parse(raw) as DialogueSession) : null;
+    if (!raw) return null;
+    const key = getEncryptionKey();
+    const json = key ? decrypt(raw, key) : raw;
+    return JSON.parse(json) as DialogueSession;
   }
 
   /** Reattach after a client reconnect using the resume token, so a WiFi blip doesn't

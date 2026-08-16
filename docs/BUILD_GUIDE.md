@@ -362,8 +362,19 @@ place of the shared-VM reverse proxy in §4.3. Not required for Phase 1 launch.
 
 ## 6. Compliance checklist (do this before real patient data flows)
 
-- [ ] Encrypt Redis session data at rest (E2E disk encryption or
-      Redis-level encryption)
+- [x] Encrypt Redis session data at rest (E2E disk encryption or
+      Redis-level encryption) — neither option is actually available from
+      this repo (disk encryption is a VM/hosting-console setting; Redis OSS,
+      what's actually deployed, has no at-rest encryption feature at all).
+      Went with a third option instead: application-level AES-256-GCM
+      encryption of the session JSON blob before it reaches Redis
+      (`apps/orchestrator/src/sessionCrypto.ts`, wired into `SessionStore`'s
+      `persist()`/`get()` in `session.ts`). Gated on `SESSION_ENCRYPTION_KEY`
+      — unset stores plain JSON exactly as before (every existing test and
+      environment today), so this ships dark until the key is actually set.
+      No data-migration logic: `SessionStore`'s 30-minute TTL means any
+      session from before a key toggle just expires and self-heals within
+      that window
 - [x] Move `recordAuditEvent` (`apps/orchestrator/src/audit.ts`) from stdout
       to a durable, queryable store with a defined retention period — a new
       Postgres service (`apps/orchestrator/src/auditStore.ts`'s
@@ -374,8 +385,21 @@ place of the shared-VM reverse proxy in §4.3. Not required for Phase 1 launch.
       secret to actually persist in deployed environments (see
       `.github/workflows/deploy.yml`) — degrades safely to the old
       stdout-only behavior until it's added
-- [ ] Define and implement an audio retention/purge policy — how long raw
-      PCM audio is kept after Sarvam STT processing, and where
+- [x] Define and implement an audio retention/purge policy — how long raw
+      PCM audio is kept after Sarvam STT processing, and where. Traced the
+      full pipeline end to end: raw PCM only ever lives in small in-memory
+      buffers, per frame/utterance — `ConnectionRelay.buffer`/`preRoll`
+      (`apps/gateway/src/relay.ts`), audio-preprocess's bounded denoise/VAD
+      context windows, and the orchestrator's `/turn/audio` handler and
+      `SarvamClient`/`SarvamRealtimeSession` — all explicitly cleared per
+      utterance or falling out of scope once a turn completes. `SessionStore`
+      (`apps/orchestrator/src/session.ts`) only ever persists transcript
+      text, never audio bytes. **No code path in this repo writes raw audio
+      to disk, Redis, or any log** — so there's no retention/purge policy to
+      implement here; the policy is "not persisted at all." The one
+      genuinely open question — how long Sarvam itself retains audio after
+      receiving it for STT — is a vendor-contract/policy question, not
+      something this repo's code controls
 - [x] DPDPA-aligned consent notice in the web UI before a voice session
       starts — `ReceptionistDashboard.tsx`'s consent modal gates
       `sdk.startSession(consentGiven)`; the flag rides the existing ticket

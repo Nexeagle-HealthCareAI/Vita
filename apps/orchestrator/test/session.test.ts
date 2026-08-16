@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 // @ts-expect-error -- ioredis-mock has no bundled types
 import RedisMock from 'ioredis-mock';
 import { SessionStore } from '../src/session.js';
@@ -111,5 +111,53 @@ describe('SessionStore (backed by ioredis-mock)', () => {
     );
 
     expect((await store.get('legacy'))?.userId).toBe('u-legacy');
+  });
+});
+
+describe('SessionStore encryption at rest (SESSION_ENCRYPTION_KEY, docs/BUILD_GUIDE.md §6)', () => {
+  afterEach(() => {
+    delete process.env.SESSION_ENCRYPTION_KEY;
+  });
+
+  it('with no key configured, stores plain JSON -- unchanged from today', async () => {
+    const redis = new RedisMock();
+    const store = new SessionStore(redis);
+    await store.create({
+      sessionId: 'plain-1',
+      userId: 'u-plain',
+      role: 'ROLE_RECEPTIONIST',
+      turnState: 'IDLE',
+      slots: {},
+      history: [],
+      resumeToken: 'tok-plain',
+    });
+
+    const raw = await redis.get('vita:session:plain-1');
+    expect(() => JSON.parse(raw)).not.toThrow();
+    expect(raw).toContain('u-plain');
+  });
+
+  it('with a key configured, the raw Redis value is not plaintext JSON, but get() still returns the correct session', async () => {
+    process.env.SESSION_ENCRYPTION_KEY = 'test-session-encryption-key';
+    const redis = new RedisMock();
+    const store = new SessionStore(redis);
+    await store.create({
+      sessionId: 'enc-1',
+      userId: 'u-secret',
+      role: 'ROLE_RECEPTIONIST',
+      turnState: 'IDLE',
+      slots: { patient_name: 'Asha Verma' },
+      history: [],
+      resumeToken: 'tok-enc',
+    });
+
+    const raw = await redis.get('vita:session:enc-1');
+    expect(() => JSON.parse(raw)).toThrow();
+    expect(raw).not.toContain('u-secret');
+    expect(raw).not.toContain('Asha Verma');
+
+    const fetched = await store.get('enc-1');
+    expect(fetched?.userId).toBe('u-secret');
+    expect(fetched?.slots.patient_name).toBe('Asha Verma');
   });
 });
