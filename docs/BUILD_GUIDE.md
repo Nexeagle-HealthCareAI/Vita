@@ -79,6 +79,21 @@ docker compose up -d redis qdrant
 pnpm dev                # gateway + orchestrator + web-demo in parallel (turbo)
 ```
 
+`apps/web-demo` (`http://localhost:5173`) has no real login -- it has a "Demo JWT" field
+(`ReceptionistDashboard.tsx`) that takes a pasted token instead, persisted to
+`localStorage` so it survives a page refresh. Before clicking "Talk to Vita", mint one
+matching your local `JWT_SIGNING_SECRET` (from the `.env` you just filled in):
+
+```bash
+cd apps/gateway
+node -e "console.log(require('jsonwebtoken').sign({ sub: 'demo-user', role: 'ROLE_RECEPTIONIST' }, process.env.JWT_SIGNING_SECRET || 'change-me'))"
+```
+
+and paste the printed token into that field. Without this, `POST /session/ticket` 401s and
+the UI shows a `TICKET_FETCH_FAILED` error (check the Network tab's response code to tell
+this apart from `gatewayOrigin` being wrong/unreachable, which fails at the network level
+instead -- `net::ERR_FAILED`, never reaching the gateway at all).
+
 Python service, separately (different runtime):
 
 ```bash

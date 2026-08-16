@@ -4,7 +4,10 @@ import { VitaWebSDK, type PatientFormFields, type VitaState } from '@vita/web-sd
 export function ReceptionistDashboard() {
   const [state, setState] = useState<VitaState>('IDLE');
   const [transcript, setTranscript] = useState('');
-  const [formData, setFormData] = useState<PatientFormFields>({
+  // Patient-detail fields aren't shown right now (kept out of the UI on request) --
+  // onFormAutofill below still receives them from the SDK so re-adding the form back is
+  // a small, self-contained change whenever it's wanted again.
+  const [, setFormData] = useState<PatientFormFields>({
     patient_name: '',
     phone: '',
     department: '',
@@ -13,11 +16,20 @@ export function ReceptionistDashboard() {
   const [sdk, setSdk] = useState<VitaWebSDK | null>(null);
   const [hasConsented, setHasConsented] = useState(false);
   const [showConsentModal, setShowConsentModal] = useState(false);
+  // Local-testing-only auth: real integrations provide authToken from their own session
+  // cookie exchange, not a pasted value. Persisted to localStorage purely so it survives a
+  // page refresh during a test session -- not a real credential store.
+  const [jwt, setJwt] = useState(() => localStorage.getItem('vita_demo_jwt') ?? '');
 
   useEffect(() => {
     const instance = new VitaWebSDK({
-      gatewayOrigin: import.meta.env.VITE_GATEWAY_ORIGIN ?? 'https://gateway.vita.hospital',
-      authToken: getSessionJwt(), // provided by your app's own auth flow
+      // Matches the gateway's default local port (GATEWAY_PORT in .env.example) -- `pnpm
+      // dev` at the repo root (docs/BUILD_GUIDE.md §2) runs gateway + orchestrator +
+      // web-demo together, so this fallback "just works" for local dev with no web-demo-
+      // specific .env of its own. A real deployment must set VITE_GATEWAY_ORIGIN at build
+      // time -- web-demo is reference-only and isn't part of this repo's own deploy.
+      gatewayOrigin: import.meta.env.VITE_GATEWAY_ORIGIN ?? 'http://localhost:8080',
+      authToken: jwt, // provided by your app's own auth flow -- pasted via the field below for local testing
       userRole: 'ROLE_RECEPTIONIST',
       onTranscript: (text) => setTranscript(text),
       onFormAutofill: (fields) => setFormData((prev) => ({ ...prev, ...fields })),
@@ -26,7 +38,7 @@ export function ReceptionistDashboard() {
     });
     setSdk(instance);
     return () => instance.stopSession();
-  }, []);
+  }, [jwt]);
 
   const isListening = state === 'LISTENING' || state === 'SPEAKING';
 
@@ -44,26 +56,20 @@ export function ReceptionistDashboard() {
         </p>
       )}
 
-      <form style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <input
-          type="text"
-          placeholder="Patient Name"
-          value={formData.patient_name ?? ''}
-          onChange={(e) => setFormData({ ...formData, patient_name: e.target.value })}
-        />
-        <input
-          type="text"
-          placeholder="Phone Number"
-          value={formData.phone ?? ''}
-          onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-        />
-        <input
-          type="text"
-          placeholder="Department"
-          value={formData.department ?? ''}
-          onChange={(e) => setFormData({ ...formData, department: e.target.value })}
-        />
-      </form>
+      <label htmlFor="demo-jwt" style={{ fontSize: 12, color: '#666', display: 'block', marginBottom: 4 }}>
+        Demo JWT (local testing only — see docs/BUILD_GUIDE.md §2 to mint one)
+      </label>
+      <input
+        id="demo-jwt"
+        type="text"
+        placeholder="Paste a JWT here..."
+        value={jwt}
+        onChange={(e) => {
+          setJwt(e.target.value);
+          localStorage.setItem('vita_demo_jwt', e.target.value);
+        }}
+        style={{ width: '100%', padding: 8, fontSize: 12, fontFamily: 'monospace', boxSizing: 'border-box' }}
+      />
 
       <button
         onClick={() => {
@@ -161,16 +167,4 @@ export function ReceptionistDashboard() {
       )}
     </div>
   );
-}
-
-function getSessionJwt(): string {
-  // Wire this up to your real auth (e.g. read from your app's session cookie
-  // exchange, not localStorage — see docs/BUILD_GUIDE.md §4.3).
-  return window.__TERA_DEMO_JWT__ ?? '';
-}
-
-declare global {
-  interface Window {
-    __TERA_DEMO_JWT__?: string;
-  }
 }

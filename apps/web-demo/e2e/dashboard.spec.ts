@@ -1,15 +1,8 @@
 import { expect, test } from '@playwright/test';
 
-test('renders the registration form and Vita talk button', async ({ page }) => {
+test('renders the Vita talk button', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByPlaceholder('Patient Name')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Talk to Vita' })).toBeVisible();
-});
-
-test('typing into the form fields works independently of the voice session', async ({ page }) => {
-  await page.goto('/');
-  await page.getByPlaceholder('Patient Name').fill('Asha Verma');
-  await expect(page.getByPlaceholder('Patient Name')).toHaveValue('Asha Verma');
 });
 
 test('DPDPA consent modal: hidden by default, opens on "Talk to Vita", Cancel dismisses it without starting a session', async ({
@@ -25,6 +18,16 @@ test('DPDPA consent modal: hidden by default, opens on "Talk to Vita", Cancel di
   await page.getByRole('button', { name: 'Cancel' }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Talk to Vita' })).toBeVisible();
+});
+
+test('demo JWT field persists a pasted token across a page reload', async ({ page }) => {
+  await page.goto('/');
+  await page.getByLabel('Demo JWT (local testing only').fill('a-test-token');
+  await expect(page.getByLabel('Demo JWT (local testing only')).toHaveValue('a-test-token');
+
+  await page.reload();
+
+  await expect(page.getByLabel('Demo JWT (local testing only')).toHaveValue('a-test-token');
 });
 
 test('DPDPA consent modal: Accept & Start dismisses the modal and proceeds past the gate', async ({ page }) => {
