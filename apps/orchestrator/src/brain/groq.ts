@@ -4,50 +4,21 @@
  * mocked HTTP layer without any real network access — same pattern as
  * packages/mcp-1hms/src/hmsClient.ts (constructor-injected fetch).
  */
-
-export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string;
-  /** Only present on role:'tool' messages -- ties the result back to the tool_call that requested it. */
-  tool_call_id?: string;
-  /** Only present on role:'tool' messages -- the tool name, per OpenAI's function-calling contract. */
-  name?: string;
-}
-
-export interface GroqToolSchema {
-  type: 'function';
-  function: {
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>; // JSON Schema
-  };
-}
-
-export interface ToolCall {
-  id: string;
-  name: string;
-  arguments: Record<string, unknown>;
-}
-
-export interface GroqChatResult {
-  /** null when the model only requested tool calls and produced no text this round. */
-  content: string | null;
-  toolCalls: ToolCall[];
-}
+import type { BrainProvider, ChatMessage, ChatResult, ToolCall, ToolSchema } from './types.js';
 
 const DEFAULT_GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
-export class GroqClient {
+export class GroqBrainProvider implements BrainProvider {
   constructor(
     private apiKey: string,
     private fetchImpl: typeof fetch = fetch,
-    // Configurable for the same reason SarvamClient's endpoints already are -- lets
-    // tools/load-test point a real GroqClient at a local mock-vendor stub instead of the
-    // real (paid, non-deterministic) API, without touching pipeline.ts at all.
+    // Configurable for the same reason the STT/TTS providers' endpoints already are --
+    // lets tools/load-test point a real GroqBrainProvider at a local mock-vendor stub
+    // instead of the real (paid, non-deterministic) API, without touching pipeline.ts.
     private apiUrl: string = DEFAULT_GROQ_API_URL,
   ) {}
 
-  async chat(messages: ChatMessage[], tools: GroqToolSchema[], model: string): Promise<GroqChatResult> {
+  async chat(messages: ChatMessage[], tools: ToolSchema[], model: string): Promise<ChatResult> {
     const res = await this.fetchImpl(this.apiUrl, {
       method: 'POST',
       headers: {

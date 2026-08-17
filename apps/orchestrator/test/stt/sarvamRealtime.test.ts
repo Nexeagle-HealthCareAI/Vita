@@ -1,16 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocketServer, type WebSocket as WsWebSocket } from 'ws';
-import { SarvamRealtimeSession, buildSarvamRealtimeUrl } from '../src/sarvamRealtime.js';
+import { SarvamRealtimeSttSession, buildSarvamRealtimeUrl } from '../../src/stt/sarvamRealtime.js';
 
 /** Real local ws.WebSocketServer standing in for Sarvam's realtime endpoint -- exercises
  * the actual wire protocol (real sockets, real JSON framing, real close codes) rather
  * than a mocked WebSocket class, per the streaming STT plan's Step 0 spike findings
  * (session.begin / transcript.partial / transcript.final / error / close-code shapes
  * verified directly against docs.sarvam.ai). */
-describe('SarvamRealtimeSession', () => {
+describe('SarvamRealtimeSttSession', () => {
   let wss: WebSocketServer;
   let connectUrl: string;
-  let session: SarvamRealtimeSession | undefined;
+  let session: SarvamRealtimeSttSession | undefined;
 
   beforeEach(async () => {
     wss = new WebSocketServer({ port: 0 });
@@ -31,7 +31,7 @@ describe('SarvamRealtimeSession', () => {
       receivedHeader = req.headers['api-subscription-key'] as string | undefined;
       socket.send(JSON.stringify({ event: 'session.begin', request_id: 'r-1', config: {} }));
     });
-    session = new SarvamRealtimeSession(connectUrl, 'secret-key');
+    session = new SarvamRealtimeSttSession(connectUrl, 'secret-key');
 
     await expect(session.connect(1000)).resolves.toBeUndefined();
     expect(receivedHeader).toBe('secret-key');
@@ -44,7 +44,7 @@ describe('SarvamRealtimeSession', () => {
       serverSocket = socket;
       socket.send(JSON.stringify({ event: 'session.begin' }));
     });
-    session = new SarvamRealtimeSession(connectUrl, 'key');
+    session = new SarvamRealtimeSttSession(connectUrl, 'key');
     const received: string[] = [];
     session.onPartialTranscript((text) => received.push(`partial:${text}`));
     session.onFinalTranscript((text) => received.push(`final:${text}`));
@@ -62,7 +62,7 @@ describe('SarvamRealtimeSession', () => {
       serverSocket = socket;
       socket.send(JSON.stringify({ event: 'session.begin' }));
     });
-    session = new SarvamRealtimeSession(connectUrl, 'key');
+    session = new SarvamRealtimeSttSession(connectUrl, 'key');
     const fatalHandler = vi.fn();
     session.onFatal(fatalHandler);
     await session.connect(1000);
@@ -83,7 +83,7 @@ describe('SarvamRealtimeSession', () => {
       serverSocket = socket;
       socket.send(JSON.stringify({ event: 'session.begin' }));
     });
-    session = new SarvamRealtimeSession(connectUrl, 'key');
+    session = new SarvamRealtimeSttSession(connectUrl, 'key');
     const fatalHandler = vi.fn();
     session.onFatal(fatalHandler);
     await session.connect(1000);
@@ -97,7 +97,7 @@ describe('SarvamRealtimeSession', () => {
     wss.once('connection', (socket) => {
       socket.close(1003, 'rate limited');
     });
-    session = new SarvamRealtimeSession(connectUrl, 'key');
+    session = new SarvamRealtimeSttSession(connectUrl, 'key');
 
     await expect(session.connect(1000)).rejects.toThrow(/code=1003/);
   });
@@ -108,7 +108,7 @@ describe('SarvamRealtimeSession', () => {
       serverSocket = socket;
       socket.send(JSON.stringify({ event: 'session.begin' }));
     });
-    session = new SarvamRealtimeSession(connectUrl, 'key');
+    session = new SarvamRealtimeSttSession(connectUrl, 'key');
     const fatalHandler = vi.fn();
     session.onFatal(fatalHandler);
     await session.connect(1000);
@@ -122,7 +122,7 @@ describe('SarvamRealtimeSession', () => {
     wss.once('connection', () => {
       // never replies
     });
-    session = new SarvamRealtimeSession(connectUrl, 'key');
+    session = new SarvamRealtimeSttSession(connectUrl, 'key');
 
     await expect(session.connect(50)).rejects.toThrow(/timed out/);
   });
@@ -133,7 +133,7 @@ describe('SarvamRealtimeSession', () => {
       socket.send(JSON.stringify({ event: 'session.begin' }));
       socket.on('message', (data: Buffer) => received.push(data.toString()));
     });
-    session = new SarvamRealtimeSession(connectUrl, 'key');
+    session = new SarvamRealtimeSttSession(connectUrl, 'key');
     await session.connect(1000);
 
     session.sendSpeechStart();
@@ -156,7 +156,7 @@ describe('SarvamRealtimeSession', () => {
         closed = true;
       });
     });
-    session = new SarvamRealtimeSession(connectUrl, 'key');
+    session = new SarvamRealtimeSttSession(connectUrl, 'key');
     await session.connect(1000);
 
     session.end();

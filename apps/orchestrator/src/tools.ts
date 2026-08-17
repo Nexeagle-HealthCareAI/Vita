@@ -2,7 +2,7 @@ import type { HmsClient } from '@vita/mcp-1hms';
 import type { HybridRetriever } from '@vita/rag';
 import { FAQ_DOCS } from '@vita/rag';
 import { assertToolPermission, type Role } from './rbac.js';
-import type { GroqToolSchema } from './groq.js';
+import type { ToolSchema } from './brain/types.js';
 
 /**
  * JSON Schema equivalents of the Zod tool definitions in
@@ -13,7 +13,7 @@ import type { GroqToolSchema } from './groq.js';
  * and there is no slot-reservation system (availability is shift windows, not slot IDs)
  * -- see hmsClient.ts's file header for the full explanation.
  */
-export const GROQ_TOOL_SCHEMAS: GroqToolSchema[] = [
+export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     type: 'function',
     function: {
@@ -98,7 +98,7 @@ export class UnknownToolError extends Error {
  * already does), then dispatches to the matching HmsClient method.
  *
  * `retriever` is optional (unlike `hms`) so every existing caller/test keeps compiling
- * unchanged -- mirrors GroqClient's optional `apiUrl` param elsewhere in this codebase.
+ * unchanged -- mirrors GroqBrainProvider's optional `apiUrl` param elsewhere in this codebase.
  * If search_vita_faq is requested with no retriever supplied, that's the same drift-guard
  * UnknownToolError the switch already throws for RBAC-allowed-but-unimplemented tools
  * (e.g. read_patient_emr).

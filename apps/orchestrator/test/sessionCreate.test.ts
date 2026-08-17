@@ -2,11 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 // @ts-expect-error -- ioredis-mock has no bundled types
 import RedisMock from 'ioredis-mock';
 import { buildServer } from '../src/index.js';
-import { mockGroq, mockSarvam, mockHms } from './helpers.js';
+import { mockGroq, mockStt, mockTts, mockHms } from './helpers.js';
 
 function app() {
   const redis = new RedisMock();
-  return buildServer(redis, { groq: mockGroq([]), sarvam: mockSarvam(), hms: mockHms() });
+  return buildServer(redis, { brain: mockGroq([]), stt: mockStt(), tts: mockTts(), hms: mockHms() });
 }
 
 describe('POST /session — DPDPA consent gate (docs/BUILD_GUIDE.md §6)', () => {

@@ -1,8 +1,8 @@
 import type { HmsClient } from '@vita/mcp-1hms';
 import type { HybridRetriever } from '@vita/rag';
-import { GroqClient, type ChatMessage } from './groq.js';
-import { SarvamClient } from './sarvam.js';
-import { GROQ_TOOL_SCHEMAS, executeTool, UnknownToolError } from './tools.js';
+import type { BrainProvider, ChatMessage } from './brain/types.js';
+import type { TtsProvider } from './tts/types.js';
+import { TOOL_SCHEMAS, executeTool, UnknownToolError } from './tools.js';
 import { ForbiddenError } from './rbac.js';
 import { recordAuditEvent } from './audit.js';
 import type { DialogueSession } from './session.js';
@@ -40,14 +40,15 @@ export interface RunTurnResult {
 export async function runTurn(opts: {
   session: DialogueSession;
   transcript: string;
-  groq: GroqClient;
-  sarvam: SarvamClient;
+  brain: BrainProvider;
+  /** TTS only -- this function never transcribes audio, only synthesizes the reply. */
+  tts: TtsProvider;
   hms: HmsClient;
   /** Optional so every existing caller/test keeps compiling unchanged -- see
    * executeTool's doc comment in tools.js for the same reasoning. */
   retriever?: HybridRetriever;
 }): Promise<RunTurnResult> {
-  const { session, transcript, groq, sarvam, hms, retriever } = opts;
+  const { session, transcript, brain, tts, hms, retriever } = opts;
   const model = modelForRole(session.role);
   const toolCallsExecuted: string[] = [];
 
@@ -59,7 +60,7 @@ export async function runTurn(opts: {
   let replyText: string | null = null;
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    const result = await groq.chat(history, GROQ_TOOL_SCHEMAS, model);
+    const result = await brain.chat(history, TOOL_SCHEMAS, model);
 
     if (result.toolCalls.length === 0) {
       replyText = result.content ?? '';
@@ -120,7 +121,7 @@ export async function runTurn(opts: {
     history.push({ role: 'assistant', content: replyText });
   }
 
-  const audio = await sarvam.synthesize(replyText);
+  const audio = await tts.synthesize(replyText);
 
   return { replyText, audio, toolCallsExecuted, updatedHistory: history };
 }

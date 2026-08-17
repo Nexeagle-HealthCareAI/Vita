@@ -3,12 +3,12 @@ import { BinaryFrameType, decodeBinaryFrame, encodeBinaryFrame } from '@vita/pro
 import type { HmsClient } from '@vita/mcp-1hms';
 import type { HybridRetriever } from '@vita/rag';
 import type { SessionStore } from './session.js';
-import type { GroqClient } from './groq.js';
-import type { SarvamClient } from './sarvam.js';
+import type { BrainProvider } from './brain/types.js';
+import type { StreamingSttSession } from './stt/types.js';
+import type { TtsProvider } from './tts/types.js';
 import { runTurn } from './pipeline.js';
 import { recordAuditEvent } from './audit.js';
 import type { ConnectionOpenGate } from './connectionGate.js';
-import type { SarvamRealtimeSession } from './sarvamRealtime.js';
 
 /**
  * Internal gateway<->orchestrator control vocabulary for the streaming path -- the
@@ -27,13 +27,13 @@ type OrchestratorStreamMessage =
 
 export interface StreamSessionDeps {
   sessions: SessionStore;
-  groq: GroqClient;
+  brain: BrainProvider;
   /** Used only for .synthesize() (TTS) inside runTurn -- entirely separate from
-   * SarvamRealtimeSession, which handles STT for this same call. */
-  sarvamBatch: SarvamClient;
+   * streamingSttSessionFactory below, which handles STT for this same call. */
+  tts: TtsProvider;
   hms: HmsClient;
   retriever?: HybridRetriever;
-  sarvamRealtimeFactory: () => SarvamRealtimeSession;
+  streamingSttSessionFactory: () => StreamingSttSession;
   connectionGate: ConnectionOpenGate;
   connectTimeoutMs: number;
   gateMaxWaitMs: number;
@@ -45,7 +45,7 @@ export interface StreamSessionDeps {
  * forwarding audio/speech-boundary signals to it, and turning a final transcript into
  * a reply via the exact same, unmodified runTurn the batch /turn/audio route uses. */
 export class StreamSessionHandler {
-  private sarvam: SarvamRealtimeSession | undefined;
+  private sttSession: StreamingSttSession | undefined;
   private dead = false;
 
   constructor(
@@ -57,14 +57,14 @@ export class StreamSessionHandler {
   async init(): Promise<void> {
     try {
       await this.deps.connectionGate.acquire(this.deps.gateMaxWaitMs);
-      const sarvam = this.deps.sarvamRealtimeFactory();
-      sarvam.onPartialTranscript((text) => this.sendJson({ event: 'transcript.partial', text }));
-      sarvam.onFinalTranscript((text) => {
+      const sttSession = this.deps.streamingSttSessionFactory();
+      sttSession.onPartialTranscript((text) => this.sendJson({ event: 'transcript.partial', text }));
+      sttSession.onFinalTranscript((text) => {
         void this.handleFinalTranscript(text);
       });
-      sarvam.onFatal((reason) => this.handleFatal(reason));
-      await sarvam.connect(this.deps.connectTimeoutMs);
-      this.sarvam = sarvam;
+      sttSession.onFatal((reason) => this.handleFatal(reason));
+      await sttSession.connect(this.deps.connectTimeoutMs);
+      this.sttSession = sttSession;
       this.sendJson({ event: 'stream.ready' });
     } catch (err) {
       this.dead = true;
@@ -77,7 +77,7 @@ export class StreamSessionHandler {
   handleMessage(data: Buffer, isBinary: boolean): void {
     if (isBinary) {
       const { type, payload } = decodeBinaryFrame(new Uint8Array(data));
-      if (type === BinaryFrameType.AUDIO_INPUT_PCM16) this.sarvam?.sendAudio(payload);
+      if (type === BinaryFrameType.AUDIO_INPUT_PCM16) this.sttSession?.sendAudio(payload);
       return;
     }
 
@@ -98,12 +98,12 @@ export class StreamSessionHandler {
       return;
     }
 
-    if (msg.event === 'speech_start') this.sarvam?.sendSpeechStart();
-    if (msg.event === 'speech_end') this.sarvam?.sendSpeechEnd();
+    if (msg.event === 'speech_start') this.sttSession?.sendSpeechStart();
+    if (msg.event === 'speech_end') this.sttSession?.sendSpeechEnd();
   }
 
   onClose(): void {
-    this.sarvam?.end();
+    this.sttSession?.end();
   }
 
   private async handleFinalTranscript(text: string): Promise<void> {
@@ -135,8 +135,8 @@ export class StreamSessionHandler {
       result = await runTurn({
         session,
         transcript: text,
-        groq: this.deps.groq,
-        sarvam: this.deps.sarvamBatch,
+        brain: this.deps.brain,
+        tts: this.deps.tts,
         hms: this.deps.hms,
         retriever: this.deps.retriever,
       });

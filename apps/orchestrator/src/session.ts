@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Redis } from 'ioredis';
-import type { ChatMessage } from './groq.js';
+import type { ChatMessage } from './brain/types.js';
 import { deriveKey, encrypt, decrypt } from './sessionCrypto.js';
 
 export type TurnState = 'IDLE' | 'LISTENING' | 'PROCESSING' | 'SPEAKING';

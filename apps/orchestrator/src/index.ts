@@ -7,12 +7,16 @@ import { HybridRetriever, LocalEmbedder, FAQ_DOCS, faqEmbedText } from '@vita/ra
 import { SessionStore } from './session.js';
 import { assertToolPermission, ForbiddenError, type Role } from './rbac.js';
 import { recordAuditEvent, initAuditStore } from './audit.js';
-import { GroqClient } from './groq.js';
-import { SarvamClient } from './sarvam.js';
+import { GroqBrainProvider } from './brain/groq.js';
+import type { BrainProvider } from './brain/types.js';
+import { SarvamSttProvider } from './stt/sarvam.js';
+import type { SttProvider, StreamingSttSession } from './stt/types.js';
+import { SarvamTtsProvider } from './tts/sarvam.js';
+import type { TtsProvider } from './tts/types.js';
 import { runTurn } from './pipeline.js';
 import { StreamSessionHandler } from './streamSession.js';
 import { ConnectionOpenGate } from './connectionGate.js';
-import { SarvamRealtimeSession, buildSarvamRealtimeUrl } from './sarvamRealtime.js';
+import { SarvamRealtimeSttSession, buildSarvamRealtimeUrl } from './stt/sarvamRealtime.js';
 
 const PORT = Number(process.env.ORCHESTRATOR_PORT ?? 8081);
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
@@ -20,24 +24,31 @@ const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 export function buildServer(
   redisClient?: Redis,
   clients?: {
-    groq?: GroqClient;
-    sarvam?: SarvamClient;
+    brain?: BrainProvider;
+    stt?: SttProvider;
+    tts?: TtsProvider;
     hms?: HmsClient;
     retriever?: HybridRetriever;
-    sarvamRealtimeFactory?: () => SarvamRealtimeSession;
+    streamingSttSessionFactory?: () => StreamingSttSession;
     connectionGate?: ConnectionOpenGate;
   },
 ) {
   const redis = redisClient ?? new IORedis(REDIS_URL);
   const sessions = new SessionStore(redis);
-  const groq = clients?.groq ?? new GroqClient(process.env.GROQ_API_KEY ?? '', undefined, process.env.GROQ_API_URL);
-  const sarvam =
-    clients?.sarvam ??
-    new SarvamClient(
+  const brain =
+    clients?.brain ?? new GroqBrainProvider(process.env.GROQ_API_KEY ?? '', undefined, process.env.GROQ_API_URL);
+  // Independent vendor-agnostic bindings (brain/stt/tts folders) -- the routes/runTurn/
+  // StreamSessionHandler below depend only on these interfaces, never on a concrete
+  // vendor class, so swapping any one vendor never ripples past this composition root.
+  const stt: SttProvider =
+    clients?.stt ??
+    new SarvamSttProvider(
       process.env.SARVAM_API_KEY ?? '',
       process.env.SARVAM_STT_ENDPOINT ?? 'https://api.sarvam.ai/speech-to-text-streaming',
-      process.env.SARVAM_TTS_ENDPOINT ?? 'https://api.sarvam.ai/text-to-speech',
     );
+  const tts: TtsProvider =
+    clients?.tts ??
+    new SarvamTtsProvider(process.env.SARVAM_API_KEY ?? '', process.env.SARVAM_TTS_ENDPOINT ?? 'https://api.sarvam.ai/text-to-speech');
   const hms =
     clients?.hms ??
     new HmsClient(process.env.HMS_API_BASE_URL ?? 'http://localhost:5000', process.env.HMS_API_KEY ?? '');
@@ -71,10 +82,10 @@ export function buildServer(
   // bursts (Sarvam's rate limiter is burst-sensitive, not a static ceiling -- see
   // connectionGate.ts). The gateway's STREAMING_STT_ENABLED is the single source of truth for
   // whether this ever gets exercised; this route is harmless to register unconditionally.
-  const sarvamRealtimeFactory =
-    clients?.sarvamRealtimeFactory ??
+  const streamingSttSessionFactory =
+    clients?.streamingSttSessionFactory ??
     (() =>
-      new SarvamRealtimeSession(
+      new SarvamRealtimeSttSession(
         buildSarvamRealtimeUrl({
           baseUrl: process.env.SARVAM_STT_REALTIME_URL ?? 'wss://api.sarvam.ai/speech-to-text-realtime/ws',
           languageCode: process.env.SARVAM_STT_LANGUAGE_CODE ?? 'en-IN',
@@ -251,7 +262,7 @@ export function buildServer(
       return reply.code(400).send({ error: 'transcript is required' });
     }
 
-    const result = await runTurn({ session, transcript, groq, sarvam, hms, retriever });
+    const result = await runTurn({ session, transcript, brain, tts, hms, retriever });
     await sessions.update(id, { history: result.updatedHistory, turnState: 'IDLE' });
 
     return reply.send({
@@ -276,7 +287,7 @@ export function buildServer(
 
     let transcript: string;
     try {
-      transcript = (await sarvam.transcribe(audio)).text;
+      transcript = (await stt.transcribe(audio)).text;
     } catch (err) {
       recordAuditEvent({
         ts: Date.now(),
@@ -307,7 +318,7 @@ export function buildServer(
 
     let result;
     try {
-      result = await runTurn({ session, transcript, groq, sarvam, hms, retriever });
+      result = await runTurn({ session, transcript, brain, tts, hms, retriever });
     } catch (err) {
       recordAuditEvent({
         ts: Date.now(),
@@ -347,11 +358,11 @@ export function buildServer(
 
         const handler = new StreamSessionHandler(id, socket, {
           sessions,
-          groq,
-          sarvamBatch: sarvam,
+          brain,
+          tts,
           hms,
           retriever,
-          sarvamRealtimeFactory,
+          streamingSttSessionFactory,
           connectionGate,
           connectTimeoutMs: Number(process.env.SARVAM_CONNECT_TIMEOUT_MS ?? 1800),
           gateMaxWaitMs: Number(process.env.SARVAM_CONNECT_GATE_MAX_WAIT_MS ?? 1000),

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { GroqClient } from '../src/groq.js';
+import { GroqBrainProvider } from '../../src/brain/groq.js';
 
 function fakeFetch(body: unknown, ok = true, status = 200) {
   return vi.fn().mockResolvedValue({
@@ -10,12 +10,12 @@ function fakeFetch(body: unknown, ok = true, status = 200) {
   }) as unknown as typeof fetch;
 }
 
-describe('GroqClient', () => {
+describe('GroqBrainProvider', () => {
   it('returns plain text content when the model makes no tool calls', async () => {
     const fetchImpl = fakeFetch({
       choices: [{ message: { content: 'Hello, how can I help?', tool_calls: undefined } }],
     });
-    const client = new GroqClient('key', fetchImpl);
+    const client = new GroqBrainProvider('key', fetchImpl);
     const result = await client.chat([{ role: 'user', content: 'hi' }], [], 'llama-3.1-8b-instant');
 
     expect(result.content).toBe('Hello, how can I help?');
@@ -41,7 +41,7 @@ describe('GroqClient', () => {
         },
       ],
     });
-    const client = new GroqClient('key', fetchImpl);
+    const client = new GroqBrainProvider('key', fetchImpl);
     const result = await client.chat([{ role: 'user', content: 'any slots tomorrow?' }], [], 'llama-3.1-8b-instant');
 
     expect(result.content).toBeNull();
@@ -52,7 +52,7 @@ describe('GroqClient', () => {
 
   it('sends the requested model and message history through unchanged', async () => {
     const fetchImpl = fakeFetch({ choices: [{ message: { content: 'ok' } }] });
-    const client = new GroqClient('key', fetchImpl);
+    const client = new GroqBrainProvider('key', fetchImpl);
     const messages = [{ role: 'system' as const, content: 'sys' }, { role: 'user' as const, content: 'hi' }];
     await client.chat(messages, [], 'llama-3.1-70b-versatile');
 
@@ -65,13 +65,13 @@ describe('GroqClient', () => {
 
   it('throws a descriptive error on a non-OK response', async () => {
     const fetchImpl = fakeFetch({ error: 'rate limited' }, false, 429);
-    const client = new GroqClient('key', fetchImpl);
+    const client = new GroqBrainProvider('key', fetchImpl);
     await expect(client.chat([{ role: 'user', content: 'hi' }], [], 'llama-3.1-8b-instant')).rejects.toThrow(/429/);
   });
 
   it('posts to a custom apiUrl when one is provided, instead of the real Groq endpoint', async () => {
     const fetchImpl = fakeFetch({ choices: [{ message: { content: 'ok' } }] });
-    const client = new GroqClient('key', fetchImpl, 'http://localhost:9999/groq/chat/completions');
+    const client = new GroqBrainProvider('key', fetchImpl, 'http://localhost:9999/groq/chat/completions');
     await client.chat([{ role: 'user', content: 'hi' }], [], 'llama-3.1-8b-instant');
 
     expect(fetchImpl).toHaveBeenCalledWith('http://localhost:9999/groq/chat/completions', expect.any(Object));

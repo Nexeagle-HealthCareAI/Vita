@@ -4,13 +4,13 @@ import RedisMock from 'ioredis-mock';
 import WebSocket from 'ws';
 import { BinaryFrameType, decodeBinaryFrame, encodeBinaryFrame } from '@vita/protocol';
 import { buildServer } from '../src/index.js';
-import { mockGroq, mockSarvam, mockHms } from './helpers.js';
-import type { SarvamRealtimeSession } from '../src/sarvamRealtime.js';
+import { mockGroq, mockStt, mockTts, mockHms } from './helpers.js';
+import type { SarvamRealtimeSttSession } from '../src/stt/sarvamRealtime.js';
 import type { ConnectionOpenGate } from '../src/connectionGate.js';
 
-/** Fakes SarvamRealtimeSession's public surface (registration-style onXxx callbacks,
- * not a single callbacks object -- see sarvamRealtime.ts) so these tests exercise the
- * real StreamSessionHandler wiring without a real Sarvam socket. Mirrors
+/** Fakes SarvamRealtimeSttSession's public surface (registration-style onXxx callbacks,
+ * not a single callbacks object -- see stt/sarvamRealtime.ts) so these tests exercise
+ * the real StreamSessionHandler wiring without a real Sarvam socket. Mirrors
  * wsRelay.integration.test.ts's/wsStreamingRelay.integration.test.ts's "real transport,
  * one hop faked out" approach one hop further down the chain. */
 function fakeSarvamRealtime(opts: { connect?: () => Promise<void>; finalTranscriptOnSpeechEnd?: string } = {}) {
@@ -37,7 +37,7 @@ function fakeSarvamRealtime(opts: { connect?: () => Promise<void>; finalTranscri
     end: vi.fn(),
     fireFatal: (reason: string) => fatalHandler?.(reason),
   };
-  return session as unknown as SarvamRealtimeSession & { fireFatal: (reason: string) => void };
+  return session as unknown as SarvamRealtimeSttSession & { fireFatal: (reason: string) => void };
 }
 
 function fakeGate(): ConnectionOpenGate {
@@ -89,16 +89,17 @@ describe('orchestrator streaming STT route (GET /session/:id/stream)', () => {
   });
 
   it('full round trip: stream.ready -> transcript.final -> one binary reply, via the real runTurn pipeline', async () => {
-    const groq = mockGroq([{ content: 'Sure, one moment.', toolCalls: [] }]);
-    const sarvamBatch = mockSarvam(new Uint8Array([9, 9, 9]));
+    const brain = mockGroq([{ content: 'Sure, one moment.', toolCalls: [] }]);
+    const tts = mockTts(new Uint8Array([9, 9, 9]));
     const hms = mockHms();
     const sarvamRealtime = fakeSarvamRealtime({ finalTranscriptOnSpeechEnd: 'is dr patel around' });
 
     app = buildServer(new RedisMock(), {
-      groq,
-      sarvam: sarvamBatch,
+      brain,
+      stt: mockStt(),
+      tts,
       hms,
-      sarvamRealtimeFactory: () => sarvamRealtime,
+      streamingSttSessionFactory: () => sarvamRealtime,
       connectionGate: fakeGate(),
     });
     await createSession(app);
@@ -132,15 +133,16 @@ describe('orchestrator streaming STT route (GET /session/:id/stream)', () => {
 
     expect(sarvamRealtime.sendSpeechStart).toHaveBeenCalledTimes(1);
     expect(sarvamRealtime.sendAudio).toHaveBeenCalledWith(new Uint8Array([1, 2, 3]));
-    expect(groq.chat).toHaveBeenCalledTimes(1);
+    expect(brain.chat).toHaveBeenCalledTimes(1);
   });
 
   it('closes with 4004 when the session does not exist', async () => {
     app = buildServer(new RedisMock(), {
-      groq: mockGroq([]),
-      sarvam: mockSarvam(),
+      brain: mockGroq([]),
+      stt: mockStt(),
+      tts: mockTts(),
       hms: mockHms(),
-      sarvamRealtimeFactory: () => fakeSarvamRealtime(),
+      streamingSttSessionFactory: () => fakeSarvamRealtime(),
       connectionGate: fakeGate(),
     });
     await app.listen({ port: 0 });
@@ -161,10 +163,11 @@ describe('orchestrator streaming STT route (GET /session/:id/stream)', () => {
     const sarvamRealtime = fakeSarvamRealtime({ connect: () => Promise.reject(new Error('quota_exceeded')) });
 
     app = buildServer(new RedisMock(), {
-      groq: mockGroq([]),
-      sarvam: mockSarvam(),
+      brain: mockGroq([]),
+      stt: mockStt(),
+      tts: mockTts(),
       hms: mockHms(),
-      sarvamRealtimeFactory: () => sarvamRealtime,
+      streamingSttSessionFactory: () => sarvamRealtime,
       connectionGate: fakeGate(),
     });
     await createSession(app);
@@ -193,15 +196,16 @@ describe('orchestrator streaming STT route (GET /session/:id/stream)', () => {
     });
   });
 
-  it('an empty final transcript is a soft no-op: transcript.final with empty text, no binary reply, no groq call', async () => {
-    const groq = mockGroq([]);
+  it('an empty final transcript is a soft no-op: transcript.final with empty text, no binary reply, no brain call', async () => {
+    const brain = mockGroq([]);
     const sarvamRealtime = fakeSarvamRealtime({ finalTranscriptOnSpeechEnd: '   ' });
 
     app = buildServer(new RedisMock(), {
-      groq,
-      sarvam: mockSarvam(),
+      brain,
+      stt: mockStt(),
+      tts: mockTts(),
       hms: mockHms(),
-      sarvamRealtimeFactory: () => sarvamRealtime,
+      streamingSttSessionFactory: () => sarvamRealtime,
       connectionGate: fakeGate(),
     });
     await createSession(app);
@@ -224,17 +228,18 @@ describe('orchestrator streaming STT route (GET /session/:id/stream)', () => {
     await c.waitForEvent('transcript.final');
     expect(c.jsonMessages.find((m) => m.event === 'transcript.final')).toEqual({ event: 'transcript.final', text: '' });
     expect(c.binaryFrames.length).toBe(0);
-    expect(groq.chat).not.toHaveBeenCalled();
+    expect(brain.chat).not.toHaveBeenCalled();
   });
 
   it('a fatal mid-call Sarvam disconnect marks the call dead and sends a recoverable turn.error', async () => {
     const sarvamRealtime = fakeSarvamRealtime();
 
     app = buildServer(new RedisMock(), {
-      groq: mockGroq([]),
-      sarvam: mockSarvam(),
+      brain: mockGroq([]),
+      stt: mockStt(),
+      tts: mockTts(),
       hms: mockHms(),
-      sarvamRealtimeFactory: () => sarvamRealtime,
+      streamingSttSessionFactory: () => sarvamRealtime,
       connectionGate: fakeGate(),
     });
     await createSession(app);

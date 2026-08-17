@@ -1,4 +1,5 @@
 import WebSocket from 'ws';
+import type { StreamingSttSession } from './types.js';
 
 /**
  * Wraps one outbound WebSocket connection to Sarvam's realtime STT API
@@ -10,10 +11,10 @@ import WebSocket from 'ws';
  * mode, so there's a single authority for turn-taking, not two that can disagree.
  *
  * Same constructor-injected-transport pattern as every other client in this codebase
- * (SarvamClient's fetchImpl, AudioPreprocessClient, ...) -- wsImpl lets tests supply a
- * fake WebSocket implementation without a real socket.
+ * (SarvamSttProvider's fetchImpl, AudioPreprocessClient, ...) -- wsImpl lets tests
+ * supply a fake WebSocket implementation without a real socket.
  */
-export class SarvamRealtimeSession {
+export class SarvamRealtimeSttSession implements StreamingSttSession {
   private socket: WebSocket | undefined;
   private ready = false;
   private partialHandler: ((text: string) => void) | undefined;
@@ -143,7 +144,7 @@ export interface SarvamRealtimeUrlConfig {
 }
 
 /** Builds the full connect URL with the query params verified against Sarvam's real
- * docs -- a pure function, kept separate from SarvamRealtimeSession itself so it's
+ * docs -- a pure function, kept separate from SarvamRealtimeSttSession itself so it's
  * trivially unit-testable without touching WebSocket at all. */
 export function buildSarvamRealtimeUrl(config: SarvamRealtimeUrlConfig): string {
   const params = new URLSearchParams({

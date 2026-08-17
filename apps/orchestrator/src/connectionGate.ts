@@ -7,7 +7,7 @@
  * during planning). A shift-change-style burst of call-starts at a reception desk
  * could trip that even under the nominal per-plan limit. This gate staggers new
  * connection *attempts*, not concurrent calls in general -- it's released the moment
- * SarvamRealtimeSession.connect() is called, not held for the call's duration.
+ * SarvamRealtimeSttSession.connect() is called, not held for the call's duration.
  */
 export class ConnectionOpenGate {
   private tokens: number;

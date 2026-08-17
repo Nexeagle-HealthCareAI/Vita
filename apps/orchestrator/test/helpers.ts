@@ -1,26 +1,35 @@
 import { vi } from 'vitest';
 import { HmsClient } from '@vita/mcp-1hms';
 import { HybridRetriever, type HybridSearchResult } from '@vita/rag';
-import { GroqClient, type GroqChatResult } from '../src/groq.js';
-import { SarvamClient } from '../src/sarvam.js';
+import { GroqBrainProvider } from '../src/brain/groq.js';
+import type { BrainProvider, ChatResult } from '../src/brain/types.js';
+import { SarvamSttProvider } from '../src/stt/sarvam.js';
+import type { SttProvider } from '../src/stt/types.js';
+import { SarvamTtsProvider } from '../src/tts/sarvam.js';
+import type { TtsProvider } from '../src/tts/types.js';
 import type { DialogueSession } from '../src/session.js';
 
-export function mockGroq(responses: GroqChatResult[]) {
-  const groq = Object.create(GroqClient.prototype) as GroqClient;
+export function mockGroq(responses: ChatResult[]) {
+  const brain = Object.create(GroqBrainProvider.prototype) as BrainProvider;
   const chat = vi.fn();
   responses.forEach((r) => chat.mockResolvedValueOnce(r));
-  groq.chat = chat;
-  return groq;
+  brain.chat = chat;
+  return brain;
 }
 
-export function mockSarvam(audio = new Uint8Array([1, 2, 3])) {
-  const sarvam = Object.create(SarvamClient.prototype) as SarvamClient;
-  sarvam.synthesize = vi.fn().mockResolvedValue(audio);
+export function mockStt(transcript = '') {
+  const stt = Object.create(SarvamSttProvider.prototype) as SttProvider;
   // Harmless default -- routes/tests that care about a specific transcript (or a throw)
   // reassign this directly on the returned object, same pattern tools.test.ts already
   // uses for mockHms()'s individual methods.
-  sarvam.transcribe = vi.fn().mockResolvedValue({ text: '' });
-  return sarvam;
+  stt.transcribe = vi.fn().mockResolvedValue({ text: transcript });
+  return stt;
+}
+
+export function mockTts(audio = new Uint8Array([1, 2, 3])) {
+  const tts = Object.create(SarvamTtsProvider.prototype) as TtsProvider;
+  tts.synthesize = vi.fn().mockResolvedValue(audio);
+  return tts;
 }
 
 export function mockHms() {

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import RedisMock from 'ioredis-mock';
 import { buildServer } from '../src/index.js';
 import { SessionStore } from '../src/session.js';
-import { mockGroq, mockSarvam, mockHms } from './helpers.js';
+import { mockGroq, mockStt, mockTts, mockHms } from './helpers.js';
 
 async function createSession(app: ReturnType<typeof buildServer>, overrides: Record<string, unknown> = {}) {
   const res = await app.inject({
@@ -21,7 +21,7 @@ describe('POST /session/:id/resume', () => {
       { content: 'anything else?', toolCalls: [] },
     ]);
     const redis = new RedisMock();
-    const app = buildServer(redis, { groq, sarvam: mockSarvam(), hms: mockHms() });
+    const app = buildServer(redis, { brain: groq, stt: mockStt(), tts: mockTts(), hms: mockHms() });
     const created = await createSession(app);
 
     await app.inject({ method: 'POST', url: '/session/sess-1/turn', payload: { transcript: 'is dr patel around' } });
@@ -51,7 +51,7 @@ describe('POST /session/:id/resume', () => {
   });
 
   it('wrong token returns 404, identical body shape to every other failure case', async () => {
-    const app = buildServer(new RedisMock(), { groq: mockGroq([]), sarvam: mockSarvam(), hms: mockHms() });
+    const app = buildServer(new RedisMock(), { brain: mockGroq([]), stt: mockStt(), tts: mockTts(), hms: mockHms() });
     await createSession(app);
 
     const res = await app.inject({
@@ -65,7 +65,7 @@ describe('POST /session/:id/resume', () => {
   });
 
   it('right token, wrong userId returns the same 404 shape', async () => {
-    const app = buildServer(new RedisMock(), { groq: mockGroq([]), sarvam: mockSarvam(), hms: mockHms() });
+    const app = buildServer(new RedisMock(), { brain: mockGroq([]), stt: mockStt(), tts: mockTts(), hms: mockHms() });
     const created = await createSession(app);
 
     const res = await app.inject({
@@ -79,7 +79,7 @@ describe('POST /session/:id/resume', () => {
   });
 
   it('missing resumeToken or userId in the body returns the same 404 shape', async () => {
-    const app = buildServer(new RedisMock(), { groq: mockGroq([]), sarvam: mockSarvam(), hms: mockHms() });
+    const app = buildServer(new RedisMock(), { brain: mockGroq([]), stt: mockStt(), tts: mockTts(), hms: mockHms() });
     await createSession(app);
 
     const res1 = await app.inject({ method: 'POST', url: '/session/sess-1/resume', payload: { userId: 'user-1' } });
@@ -92,7 +92,7 @@ describe('POST /session/:id/resume', () => {
   });
 
   it('an unknown sessionId returns the same 404 shape as every other failure case', async () => {
-    const app = buildServer(new RedisMock(), { groq: mockGroq([]), sarvam: mockSarvam(), hms: mockHms() });
+    const app = buildServer(new RedisMock(), { brain: mockGroq([]), stt: mockStt(), tts: mockTts(), hms: mockHms() });
 
     const res = await app.inject({
       method: 'POST',
@@ -105,7 +105,7 @@ describe('POST /session/:id/resume', () => {
   });
 
   it('a resume using an already-rotated (stale) token fails -- proves single-use-per-resume', async () => {
-    const app = buildServer(new RedisMock(), { groq: mockGroq([]), sarvam: mockSarvam(), hms: mockHms() });
+    const app = buildServer(new RedisMock(), { brain: mockGroq([]), stt: mockStt(), tts: mockTts(), hms: mockHms() });
     const created = await createSession(app);
 
     const first = await app.inject({
