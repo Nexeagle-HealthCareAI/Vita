@@ -185,7 +185,7 @@ describe('TeraWebSDK — REPLY_TEXT (the assistant reply, as text)', () => {
     vi.useRealTimers();
   });
 
-  it('a REPLY_TEXT message calls onReplyText with the reply text', async () => {
+  it('a REPLY_TEXT message with no final field calls onReplyText with isFinal defaulted to true', async () => {
     global.fetch = fetchOkWithTicket();
     const onReplyText = vi.fn();
     const sdk = new TeraWebSDK({ ...baseConfig, onReplyText });
@@ -194,6 +194,18 @@ describe('TeraWebSDK — REPLY_TEXT (the assistant reply, as text)', () => {
     const ws = FakeWebSocket.instances[0];
     ws.onmessage?.({ data: JSON.stringify({ event: 'REPLY_TEXT', text: 'Dr. Patel is in from 9 to 1.' }) });
 
-    expect(onReplyText).toHaveBeenCalledWith('Dr. Patel is in from 9 to 1.');
+    expect(onReplyText).toHaveBeenCalledWith('Dr. Patel is in from 9 to 1.', true);
+  });
+
+  it('a REPLY_TEXT message with final:false calls onReplyText with isFinal:false', async () => {
+    global.fetch = fetchOkWithTicket();
+    const onReplyText = vi.fn();
+    const sdk = new TeraWebSDK({ ...baseConfig, onReplyText });
+
+    await sdk.startSession(true);
+    const ws = FakeWebSocket.instances[0];
+    ws.onmessage?.({ data: JSON.stringify({ event: 'REPLY_TEXT', text: 'Let me check that.', final: false }) });
+
+    expect(onReplyText).toHaveBeenCalledWith('Let me check that.', false);
   });
 });

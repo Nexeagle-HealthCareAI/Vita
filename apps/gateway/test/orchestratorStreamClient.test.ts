@@ -95,7 +95,7 @@ describe('OrchestratorStreamClient', () => {
 
     serverSocket!.send(JSON.stringify({ event: 'transcript.partial', text: 'hel' }));
     serverSocket!.send(JSON.stringify({ event: 'transcript.final', text: 'hello' }));
-    serverSocket!.send(JSON.stringify({ event: 'turn.reply', text: 'hi there' }));
+    serverSocket!.send(JSON.stringify({ event: 'turn.reply', text: 'hi there', final: true }));
     serverSocket!.send(JSON.stringify({ event: 'turn.error', code: 'TURN_FAILED', message: 'boom', recoverable: true }));
     serverSocket!.send(encodeBinaryFrame(BinaryFrameType.AUDIO_OUTPUT_PCM16, new Uint8Array([1, 2, 3])));
 
@@ -104,7 +104,32 @@ describe('OrchestratorStreamClient', () => {
     expect(callbacks.onFinalTranscript).toHaveBeenCalledWith('hello');
     expect(callbacks.onReplyText).toHaveBeenCalledWith('hi there');
     expect(callbacks.onTurnError).toHaveBeenCalledWith('TURN_FAILED', 'boom', true);
-    expect(callbacks.onReplyAudio).toHaveBeenCalledWith(new Uint8Array([1, 2, 3]));
+    // The binary frame immediately following a turn.reply{final:true} is correlated as
+    // that chunk's own (final) audio -- see orchestratorStreamClient.ts's pendingReplyFinal.
+    expect(callbacks.onReplyAudio).toHaveBeenCalledWith(new Uint8Array([1, 2, 3]), true);
+  });
+
+  it('correlates a turn.reply{final:false} with its own binary frame as isFinalChunk:false, per chunk', async () => {
+    let serverSocket: WsWebSocket;
+    wss.once('connection', (socket) => {
+      serverSocket = socket;
+      socket.send(JSON.stringify({ event: 'stream.ready' }));
+    });
+    client = new OrchestratorStreamClient(baseWsUrl);
+    const callbacks = fakeCallbacks();
+    await client.connect('sess-1', 1000, callbacks);
+
+    // Chunk 1: non-final text immediately followed by its own audio frame.
+    serverSocket!.send(JSON.stringify({ event: 'turn.reply', text: 'Sure, ', final: false }));
+    serverSocket!.send(encodeBinaryFrame(BinaryFrameType.AUDIO_OUTPUT_PCM16, new Uint8Array([1])));
+    await vi.waitFor(() => expect(callbacks.onReplyAudio).toHaveBeenCalledTimes(1));
+    expect(callbacks.onReplyAudio).toHaveBeenNthCalledWith(1, new Uint8Array([1]), false);
+
+    // Chunk 2: final text immediately followed by its own (final) audio frame.
+    serverSocket!.send(JSON.stringify({ event: 'turn.reply', text: 'one moment.', final: true }));
+    serverSocket!.send(encodeBinaryFrame(BinaryFrameType.AUDIO_OUTPUT_PCM16, new Uint8Array([2])));
+    await vi.waitFor(() => expect(callbacks.onReplyAudio).toHaveBeenCalledTimes(2));
+    expect(callbacks.onReplyAudio).toHaveBeenNthCalledWith(2, new Uint8Array([2]), true);
   });
 
   it('fires onDisconnected on an unexpected close after a successful connect, not before', async () => {
@@ -136,12 +161,14 @@ describe('OrchestratorStreamClient', () => {
     client.sendSpeechStart();
     client.sendSpeechEnd();
     client.sendAudioFrame(new Uint8Array([9, 8, 7]));
+    client.sendTurnAbort();
 
-    await vi.waitFor(() => expect(received.length).toBe(3));
+    await vi.waitFor(() => expect(received.length).toBe(4));
     expect(received[0]).toBe(JSON.stringify({ event: 'speech_start' }));
     expect(received[1]).toBe(JSON.stringify({ event: 'speech_end' }));
     const { type, payload } = decodeBinaryFrame(received[2] as Uint8Array);
     expect(type).toBe(BinaryFrameType.AUDIO_INPUT_PCM16);
     expect(Array.from(payload)).toEqual([9, 8, 7]);
+    expect(received[3]).toBe(JSON.stringify({ event: 'turn.abort' }));
   });
 });

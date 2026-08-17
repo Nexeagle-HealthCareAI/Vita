@@ -10,6 +10,7 @@ function fakeStream() {
     sendSpeechStart: vi.fn(),
     sendSpeechEnd: vi.fn(),
     sendAudioFrame: vi.fn(),
+    sendTurnAbort: vi.fn(),
     close: vi.fn(),
   } as unknown as OrchestratorStreamClient;
 }
@@ -81,11 +82,23 @@ describe('StreamingTurnBackend', () => {
     backend.handleReplyText('hello there');
     expect(events.onReplyText).toHaveBeenCalledWith('hello there');
 
-    backend.handleReplyAudio(new Uint8Array([9]));
-    expect(events.onReplyAudio).toHaveBeenCalledWith(new Uint8Array([9]));
+    backend.handleReplyAudio(new Uint8Array([9]), false);
+    expect(events.onReplyAudio).toHaveBeenCalledWith(new Uint8Array([9]), false);
+
+    backend.handleReplyAudio(new Uint8Array([10]), true);
+    expect(events.onReplyAudio).toHaveBeenCalledWith(new Uint8Array([10]), true);
 
     backend.handleTurnError('TURN_FAILED', 'boom', true);
     expect(events.onError).toHaveBeenCalledWith({ code: 'TURN_FAILED', message: 'boom', recoverable: true });
+  });
+
+  it('abortActiveTurn() forwards to stream.sendTurnAbort()', () => {
+    const stream = fakeStream();
+    const backend = new StreamingTurnBackend(stream, fakeEvents());
+
+    backend.abortActiveTurn();
+
+    expect(stream.sendTurnAbort).toHaveBeenCalledTimes(1);
   });
 
   it('close() delegates to the stream client', () => {

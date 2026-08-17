@@ -29,13 +29,23 @@ export const TranscriptEvent = z.object({
   is_final: z.boolean(),
 });
 
-/** [NEW] The assistant's reply text for a turn -- previously only ever synthesized to
- * audio and played, never handed to the host app as text. Sent once per turn, alongside
- * (not instead of) the AUDIO_OUTPUT_PCM16 binary frames. Purely additive, see
- * SessionReadyEvent's doc comment for why this needs no PROTOCOL_VERSION bump. */
+/** The assistant's reply text for a turn -- previously only ever synthesized to audio and
+ * played, never handed to the host app as text. May now fire MULTIPLE times per turn (one
+ * per sentence, as each is synthesized) instead of exactly once -- `final` distinguishes
+ * "more of this reply is still coming" (false/omitted) from "this is the last piece"
+ * (true). `final` is optional rather than required specifically because this is the first
+ * field added to an ALREADY-SHIPPED event type here (every other addition in this file has
+ * been a whole new event type), which is a cardinality change, not a purely additive one --
+ * an optional field means an out-of-lockstep sender/receiver degrades gracefully (reads as
+ * "one complete reply") instead of failing validation outright. Not bumping
+ * PROTOCOL_VERSION for this: gateway/orchestrator/web-sdk are always deployed together
+ * (see this file's header), and there's no live third-party consumer yet (the Phase 2
+ * mobile SDK doesn't exist). Always sent alongside (not instead of) the AUDIO_OUTPUT_PCM16
+ * binary frames, one pair per chunk. */
 export const ReplyTextEvent = z.object({
   event: z.literal('REPLY_TEXT'),
   text: z.string(),
+  final: z.boolean().optional(),
 });
 
 export const FormAutofillEvent = z.object({

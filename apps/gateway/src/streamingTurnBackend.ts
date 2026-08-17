@@ -56,6 +56,10 @@ export class StreamingTurnBackend implements TurnBackend {
     this.stream.sendSpeechEnd();
   }
 
+  abortActiveTurn(): void {
+    this.stream.sendTurnAbort();
+  }
+
   close(): void {
     this.stream.close();
   }
@@ -75,8 +79,8 @@ export class StreamingTurnBackend implements TurnBackend {
     this.events.onReplyText(text);
   }
 
-  handleReplyAudio(audio: Uint8Array): void {
-    this.events.onReplyAudio(audio);
+  handleReplyAudio(audio: Uint8Array, isFinalChunk: boolean): void {
+    this.events.onReplyAudio(audio, isFinalChunk);
   }
 
   handleTurnError(code: string, message: string, recoverable: boolean): void {
@@ -125,7 +129,7 @@ export class DefaultTurnBackendFactory implements TurnBackendFactory {
       onPartialTranscript: (text) => backend.handlePartialTranscript(text),
       onFinalTranscript: (text) => backend.handleFinalTranscript(text),
       onReplyText: (text) => backend.handleReplyText(text),
-      onReplyAudio: (audio) => backend.handleReplyAudio(audio),
+      onReplyAudio: (audio, isFinalChunk) => backend.handleReplyAudio(audio, isFinalChunk),
       onTurnError: (code, message, recoverable) => backend.handleTurnError(code, message, recoverable),
       onDisconnected: () => backend.handleDisconnected(),
     });

@@ -16,13 +16,15 @@ import type { ConnectionOpenGate } from './connectionGate.js';
  * orchestratorStreamClient.ts defines independently (see that file's comment for why
  * this deliberately isn't part of @vita/protocol).
  */
-type GatewayStreamMessage = { event: 'speech_start' } | { event: 'speech_end' };
+type GatewayStreamMessage = { event: 'speech_start' } | { event: 'speech_end' } | { event: 'turn.abort' };
 type OrchestratorStreamMessage =
   | { event: 'stream.ready' }
   | { event: 'stream.unavailable'; reason: string }
   | { event: 'transcript.partial'; text: string }
   | { event: 'transcript.final'; text: string }
-  | { event: 'turn.reply'; text: string }
+  /** final:false for every sentence chunk but the last, so the gateway/client know when a
+   * turn's spoken reply is genuinely done -- see pipeline.ts's runTurn's onReplyChunk. */
+  | { event: 'turn.reply'; text: string; final: boolean }
   | { event: 'turn.error'; code: string; message: string; recoverable: boolean };
 
 export interface StreamSessionDeps {
@@ -47,6 +49,11 @@ export interface StreamSessionDeps {
 export class StreamSessionHandler {
   private sttSession: StreamingSttSession | undefined;
   private dead = false;
+  /** Set by an inbound turn.abort (the gateway's ConnectionRelay sends this when the user
+   * barges in mid-reply) and checked by runTurn between rounds, so a barge-in stops
+   * further generation/synthesis instead of wastefully continuing a reply nobody's
+   * listening to anymore. Reset at the start of every new turn. */
+  private turnAborted = false;
 
   constructor(
     private readonly sessionId: string,
@@ -100,6 +107,7 @@ export class StreamSessionHandler {
 
     if (msg.event === 'speech_start') this.sttSession?.sendSpeechStart();
     if (msg.event === 'speech_end') this.sttSession?.sendSpeechEnd();
+    if (msg.event === 'turn.abort') this.turnAborted = true;
   }
 
   onClose(): void {
@@ -107,6 +115,8 @@ export class StreamSessionHandler {
   }
 
   private async handleFinalTranscript(text: string): Promise<void> {
+    this.turnAborted = false; // a fresh turn always starts un-aborted, even if a barge-in fired on the PREVIOUS one
+
     const session = await this.deps.sessions.get(this.sessionId);
     if (!session) {
       this.sendJson({ event: 'turn.error', code: 'SESSION_NOT_FOUND', message: 'session not found', recoverable: false });
@@ -139,6 +149,17 @@ export class StreamSessionHandler {
         tts: this.deps.tts,
         hms: this.deps.hms,
         retriever: this.deps.retriever,
+        // Sends each sentence's text+audio as soon as it's synthesized, instead of
+        // waiting for the whole reply -- text message immediately followed by its own
+        // binary audio frame, in that order, for every chunk including the last. That
+        // ordering is load-bearing: the gateway correlates a turn.reply{final} message
+        // with the very next binary frame to know which chunk ends the turn's audio
+        // (see orchestratorStreamClient.ts).
+        onReplyChunk: (chunk) => {
+          this.sendJson({ event: 'turn.reply', text: chunk.text, final: chunk.isFinal });
+          this.socket.send(encodeBinaryFrame(BinaryFrameType.AUDIO_OUTPUT_PCM16, chunk.audio));
+        },
+        isAborted: () => this.turnAborted,
       });
     } catch (err) {
       recordAuditEvent({
@@ -158,9 +179,14 @@ export class StreamSessionHandler {
       return;
     }
 
+    // Persist whatever was actually said even if a mid-stream TTS failure (result.error)
+    // cut the reply short -- runTurn already guarantees history/replyText/audio reflect
+    // only what was truly spoken, never more. The chunks themselves were already sent
+    // live via onReplyChunk above; only the error (if any) still needs surfacing.
     await this.deps.sessions.update(session.sessionId, { history: result.updatedHistory, turnState: 'IDLE' });
-    this.sendJson({ event: 'turn.reply', text: result.replyText });
-    this.socket.send(encodeBinaryFrame(BinaryFrameType.AUDIO_OUTPUT_PCM16, result.audio));
+    if (result.error) {
+      this.sendJson({ event: 'turn.error', code: 'TTS_FAILED', message: result.error, recoverable: true });
+    }
   }
 
   /** Sarvam dies mid-call (fatal error, or an unexpected close after session.begin) --

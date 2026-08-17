@@ -65,6 +65,31 @@ function jsonSends(sent: (string | Uint8Array)[]): unknown[] {
   return sent.filter((s): s is string => typeof s === 'string').map((s) => JSON.parse(s));
 }
 
+/** A fully test-controlled TurnBackend (unlike fakeBackendFactory's real BatchTurnBackend
+ * above) -- lets a test fire onReplyAudio() multiple times per turn at will, to exercise
+ * the streaming (StreamingTurnBackend-shaped) multi-chunk path through ConnectionRelay
+ * without needing a real orchestrator WS connection. abortActiveTurn is spied so tests
+ * can assert ConnectionRelay.triggerBargeIn() actually propagates the abort. */
+function fakeStreamingBackendFactory() {
+  const events: TurnBackendEvents[] = [];
+  const abortActiveTurn = vi.fn();
+  const beginUtterance = vi.fn();
+  const endUtterance = vi.fn();
+  const close = vi.fn();
+  const create = vi.fn((_sessionId: string, evts: TurnBackendEvents): Promise<TurnBackend> => {
+    events.push(evts);
+    return Promise.resolve({ beginUtterance, pushFrame: vi.fn(), endUtterance, abortActiveTurn, close });
+  });
+  return { create, events, abortActiveTurn, beginUtterance, endUtterance, close } satisfies TurnBackendFactory & {
+    create: Mock;
+    events: TurnBackendEvents[];
+    abortActiveTurn: Mock;
+    beginUtterance: Mock;
+    endUtterance: Mock;
+    close: Mock;
+  };
+}
+
 describe('ConnectionRelay', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -412,6 +437,135 @@ describe('ConnectionRelay', () => {
       await vi.advanceTimersByTimeAsync(100);
       await sendFrame(relay, frame(99));
       expect((audioPreprocess.process as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsAtSpeaking);
+    });
+  });
+
+  describe('multi-chunk speak() (streaming replies)', () => {
+    const CONFIG: Partial<RelayConfig> = { minUtteranceSpeechMs: 40, silenceHangoverMs: 20, bargeInGraceMs: 40 };
+
+    /** Drives real VAD-detected frames through the relay until an utterance ends and
+     * startEndOfUtterance() dispatches it to the backend (PROCESSING) -- same shape as
+     * the barge-in describe block's getIntoSpeaking(), but stops at PROCESSING instead
+     * of assuming a real backend replies on its own, since these tests drive replies
+     * manually via the fake streaming backend's captured events. */
+    async function driveUtteranceIntoProcessing(relay: ConnectionRelay, audioPreprocess: AudioPreprocessClient, markers: [number, number, number]) {
+      (audioPreprocess.process as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ frame: frame(markers[0]), speechDetected: true })
+        .mockResolvedValueOnce({ frame: frame(markers[1]), speechDetected: true }); // arms (40ms)
+      await sendFrame(relay, frame(markers[0]));
+      await sendFrame(relay, frame(markers[1]));
+      (audioPreprocess.process as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ frame: frame(markers[2]), speechDetected: false });
+      await sendFrame(relay, frame(markers[2])); // 20ms silence -> hangover -> ends utterance -> PROCESSING
+    }
+
+    /** durationMs of 16-bit mono PCM16 @16kHz. */
+    function pcm16(durationMs: number): Uint8Array {
+      return new Uint8Array(Math.round((durationMs / 1000) * 16000 * 2));
+    }
+
+    it('a 3-chunk reply produces exactly one STATE_CHANGE:SPEAKING/LISTENING pair, timed off the total duration', async () => {
+      const audioPreprocess = fakeAudioPreprocess();
+      const orchestrator = fakeOrchestrator();
+      const backendFactory = fakeStreamingBackendFactory();
+      const sent: (string | Uint8Array)[] = [];
+      const relay = new ConnectionRelay({ audioPreprocess, orchestrator, backendFactory, claims: CLAIMS, send: (d) => sent.push(d) }, CONFIG);
+      await relay.start();
+      await driveUtteranceIntoProcessing(relay, audioPreprocess, [1, 2, 3]);
+
+      const events = backendFactory.events[0]!;
+      events.onReplyAudio(pcm16(100), false); // chunk 1
+      events.onReplyAudio(pcm16(100), false); // chunk 2
+      events.onReplyAudio(pcm16(100), true); // chunk 3 (final) -- 300ms total
+
+      const speakingEvents = jsonSends(sent).filter((e) => JSON.stringify(e) === JSON.stringify({ event: 'STATE_CHANGE', state: 'SPEAKING' }));
+      expect(speakingEvents.length).toBe(1); // not once per chunk
+
+      await vi.advanceTimersByTimeAsync(299);
+      expect(jsonSends(sent).at(-1)).toEqual({ event: 'STATE_CHANGE', state: 'SPEAKING' });
+      await vi.advanceTimersByTimeAsync(5);
+      expect(jsonSends(sent).at(-1)).toEqual({ event: 'STATE_CHANGE', state: 'LISTENING' });
+
+      const listeningEvents = jsonSends(sent).filter((e) => JSON.stringify(e) === JSON.stringify({ event: 'STATE_CHANGE', state: 'LISTENING' }));
+      expect(listeningEvents.length).toBe(1);
+      const binaryFrames = sent.filter((s): s is Uint8Array => s instanceof Uint8Array);
+      expect(binaryFrames.length).toBeGreaterThan(0);
+    });
+
+    it('a barge-in mid-reply aborts the backend and silently drops the chunk already in flight', async () => {
+      const audioPreprocess = fakeAudioPreprocess();
+      const orchestrator = fakeOrchestrator();
+      const backendFactory = fakeStreamingBackendFactory();
+      const sent: (string | Uint8Array)[] = [];
+      const relay = new ConnectionRelay({ audioPreprocess, orchestrator, backendFactory, claims: CLAIMS, send: (d) => sent.push(d) }, CONFIG);
+      await relay.start();
+      await driveUtteranceIntoProcessing(relay, audioPreprocess, [1, 2, 3]);
+
+      const events = backendFactory.events[0]!;
+      events.onReplyAudio(pcm16(1000), false); // chunk 1 of a long reply -- still speaking when barge-in fires
+      events.onReplyAudio(pcm16(1000), false); // chunk 2
+
+      await vi.advanceTimersByTimeAsync(41); // past bargeInGraceMs=40 -> armed
+      (audioPreprocess.process as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ frame: frame(50), speechDetected: true })
+        .mockResolvedValueOnce({ frame: frame(51), speechDetected: true });
+      await sendFrame(relay, frame(50)); // 20ms -- below minUtteranceSpeechMs=40
+      await sendFrame(relay, frame(51)); // cumulative 40ms -> triggers barge-in
+
+      expect(jsonSends(sent).some((e) => (e as { event: string }).event === 'CLEAR_PLAYBACK')).toBe(true);
+      expect(jsonSends(sent).at(-1)).toEqual({ event: 'STATE_CHANGE', state: 'LISTENING' });
+      expect(backendFactory.abortActiveTurn).toHaveBeenCalledTimes(1);
+
+      // Chunk 3 was already being synthesized server-side when the abort fired -- it
+      // arrives anyway, but must be silently dropped: no new frames, no state churn.
+      const sentLengthAtBargeIn = sent.length;
+      events.onReplyAudio(pcm16(1000), true);
+      await vi.advanceTimersByTimeAsync(1001);
+      expect(sent.length).toBe(sentLengthAtBargeIn);
+    });
+
+    it('a stale chunk from an aborted turn arriving after the NEXT turn has already finished speaking never reopens SPEAKING', async () => {
+      // Coverage boundary, matching what relay.ts's speak() doc comment states: the
+      // awaitingFirstReplyChunk gate is a backstop for a chunk still in flight when abort
+      // fires, closing the gap BEFORE the next turn is dispatched (see the barge-in test
+      // above) and the gap AFTER the next turn fully completes (this test). It can't
+      // (without real per-chunk turn identity, deliberately out of scope -- see the plan)
+      // distinguish a stale chunk from a legitimate one arriving WHILE a newer turn is
+      // still actively speaking -- that narrower residual race relies on the orchestrator
+      // honoring turn.abort and not producing the stale chunk at all in the first place.
+      const audioPreprocess = fakeAudioPreprocess();
+      const orchestrator = fakeOrchestrator();
+      const backendFactory = fakeStreamingBackendFactory();
+      const sent: (string | Uint8Array)[] = [];
+      const relay = new ConnectionRelay({ audioPreprocess, orchestrator, backendFactory, claims: CLAIMS, send: (d) => sent.push(d) }, CONFIG);
+      await relay.start();
+
+      // Turn A: starts speaking, then gets interrupted.
+      await driveUtteranceIntoProcessing(relay, audioPreprocess, [1, 2, 3]);
+      const events = backendFactory.events[0]!;
+      events.onReplyAudio(pcm16(1000), false); // turn A, chunk 1
+
+      await vi.advanceTimersByTimeAsync(41);
+      (audioPreprocess.process as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ frame: frame(50), speechDetected: true })
+        .mockResolvedValueOnce({ frame: frame(51), speechDetected: true });
+      await sendFrame(relay, frame(50));
+      await sendFrame(relay, frame(51)); // triggers barge-in -- turn A aborted
+      expect(backendFactory.abortActiveTurn).toHaveBeenCalledTimes(1);
+
+      // Turn B: the barge-in's own utterance is captured, dispatched, and fully replies
+      // to and completes -- back to LISTENING.
+      await driveUtteranceIntoProcessing(relay, audioPreprocess, [60, 61, 62]);
+      events.onReplyAudio(pcm16(50), true); // turn B's whole (short) reply
+      expect(jsonSends(sent).at(-1)).toEqual({ event: 'STATE_CHANGE', state: 'SPEAKING' });
+      await vi.advanceTimersByTimeAsync(51);
+      expect(jsonSends(sent).at(-1)).toEqual({ event: 'STATE_CHANGE', state: 'LISTENING' });
+
+      // Turn A's stale final chunk (already in flight when the abort fired) arrives only
+      // now, well after turn B finished -- must be dropped, not reopen SPEAKING.
+      const sentLengthAfterTurnB = sent.length;
+      events.onReplyAudio(pcm16(1000), true);
+      expect(sent.length).toBe(sentLengthAfterTurnB);
+      expect(jsonSends(sent).at(-1)).toEqual({ event: 'STATE_CHANGE', state: 'LISTENING' });
     });
   });
 

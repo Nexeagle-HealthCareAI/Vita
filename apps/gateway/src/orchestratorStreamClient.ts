@@ -16,14 +16,14 @@ type OrchestratorStreamMessage =
   | { event: 'stream.unavailable'; reason: string }
   | { event: 'transcript.partial'; text: string }
   | { event: 'transcript.final'; text: string }
-  | { event: 'turn.reply'; text: string }
+  | { event: 'turn.reply'; text: string; final: boolean }
   | { event: 'turn.error'; code: string; message: string; recoverable: boolean };
 
 export interface OrchestratorStreamCallbacks {
   onPartialTranscript(text: string): void;
   onFinalTranscript(text: string): void;
   onReplyText(text: string): void;
-  onReplyAudio(audio: Uint8Array): void;
+  onReplyAudio(audio: Uint8Array, isFinalChunk: boolean): void;
   onTurnError(code: string, message: string, recoverable: boolean): void;
   /** Fires on any close/error *after* a successful connect -- never for the initial
    * connect-failure case, which connect() itself resolves as 'unavailable' instead. */
@@ -39,6 +39,11 @@ export class OrchestratorStreamClient {
   private socket: WebSocket | undefined;
   private callbacks: OrchestratorStreamCallbacks | undefined;
   private connected = false;
+  /** Set by the most recent turn.reply{final}, consumed by the VERY NEXT binary frame --
+   * the orchestrator always sends a chunk's text message immediately followed by its own
+   * paired audio frame (see streamSession.ts), and WS delivery is strictly ordered, so
+   * this correlation is reliable without needing a chunk id on the wire. */
+  private pendingReplyFinal = false;
 
   constructor(
     private readonly baseWsUrl: string,
@@ -65,7 +70,11 @@ export class OrchestratorStreamClient {
       socket.on('message', (data: Buffer, isBinary: boolean) => {
         if (isBinary) {
           const { type, payload } = decodeBinaryFrame(new Uint8Array(data));
-          if (type === BinaryFrameType.AUDIO_OUTPUT_PCM16) this.callbacks?.onReplyAudio(payload);
+          if (type === BinaryFrameType.AUDIO_OUTPUT_PCM16) {
+            const isFinalChunk = this.pendingReplyFinal;
+            this.pendingReplyFinal = false;
+            this.callbacks?.onReplyAudio(payload, isFinalChunk);
+          }
           return;
         }
         const msg = JSON.parse(data.toString()) as OrchestratorStreamMessage;
@@ -84,6 +93,7 @@ export class OrchestratorStreamClient {
             this.callbacks?.onFinalTranscript(msg.text);
             break;
           case 'turn.reply':
+            this.pendingReplyFinal = msg.final;
             this.callbacks?.onReplyText(msg.text);
             break;
           case 'turn.error':
@@ -116,6 +126,12 @@ export class OrchestratorStreamClient {
 
   sendAudioFrame(frame: Uint8Array): void {
     this.socket?.send(encodeBinaryFrame(BinaryFrameType.AUDIO_INPUT_PCM16, frame));
+  }
+
+  /** Tells the orchestrator to stop generating/synthesizing further chunks for the turn
+   * currently in flight -- sent when ConnectionRelay detects a barge-in. */
+  sendTurnAbort(): void {
+    this.socket?.send(JSON.stringify({ event: 'turn.abort' }));
   }
 
   close(): void {

@@ -2,7 +2,7 @@ import { vi } from 'vitest';
 import { HmsClient } from '@vita/mcp-1hms';
 import { HybridRetriever, type HybridSearchResult } from '@vita/rag';
 import { GroqBrainProvider } from '../src/brain/groq.js';
-import type { BrainProvider, ChatResult } from '../src/brain/types.js';
+import type { BrainProvider, BrainStreamChunk, ChatResult } from '../src/brain/types.js';
 import { SarvamSttProvider } from '../src/stt/sarvam.js';
 import type { SttProvider } from '../src/stt/types.js';
 import { SarvamTtsProvider } from '../src/tts/sarvam.js';
@@ -14,6 +14,30 @@ export function mockGroq(responses: ChatResult[]) {
   const chat = vi.fn();
   responses.forEach((r) => chat.mockResolvedValueOnce(r));
   brain.chat = chat;
+  // Structurally complete even though non-streaming tests never call this -- an `as
+  // BrainProvider` cast on Object.create(...) doesn't get compile-time-checked for missing
+  // members, so a test that accidentally exercises the streaming path via this mock would
+  // otherwise type-check fine and crash at runtime instead. Tests that actually WANT
+  // scripted streaming output should use mockGroqStream() below.
+  brain.chatStream = vi.fn();
+  return brain;
+}
+
+/** Streaming counterpart to mockGroq() -- `rounds` is one array of chunks per expected
+ * brain.chatStream() call (pipeline.ts's runTurn calls it once per tool-round), each
+ * yielded in order as an async generator, mirroring how a real streamed response
+ * delivers content deltas followed by one done:true chunk carrying any tool calls. */
+export function mockGroqStream(rounds: BrainStreamChunk[][]) {
+  const brain = Object.create(GroqBrainProvider.prototype) as BrainProvider;
+  brain.chat = vi.fn(); // unused by the streaming path -- present for structural completeness
+  let callIndex = 0;
+  brain.chatStream = vi.fn(() => {
+    const chunks = rounds[callIndex] ?? [];
+    callIndex++;
+    return (async function* () {
+      for (const chunk of chunks) yield chunk;
+    })();
+  });
   return brain;
 }
 

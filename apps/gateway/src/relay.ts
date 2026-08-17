@@ -87,6 +87,21 @@ export class ConnectionRelay {
   private bargeInArmed = false;
   private bargeInTimer: ReturnType<typeof setTimeout> | undefined;
 
+  // -- Multi-chunk speak() bookkeeping (streaming replies) --
+  /** Bumped once per turn, in startEndOfUtterance() -- the authoritative "a new turn's
+   * reply is now expected" signal. */
+  private turnGeneration = 0;
+  /** True only in the window between startEndOfUtterance() dispatching a turn and
+   * speak() claiming its first chunk -- see speak()'s own comment for why this (not
+   * `state !== 'SPEAKING'`) is the thing that decides whether an incoming chunk is
+   * allowed to open a new SPEAKING window. */
+  private awaitingFirstReplyChunk = false;
+  /** Non-null while a turn "owns" SPEAKING; set by speak()'s first chunk, cleared either
+   * when that turn's final chunk finishes or immediately on barge-in. */
+  private speakingGeneration: number | null = null;
+  private turnAudioDurationMs = 0;
+  private turnSpeakingStartedAt = 0;
+
   private frameQueue: Promise<void> = Promise.resolve();
 
   constructor(
@@ -136,7 +151,7 @@ export class ConnectionRelay {
       onPartialTranscript: (text) => this.onPartialTranscript(text),
       onFinalTranscript: (text) => this.onFinalTranscript(text),
       onReplyText: (text) => this.onReplyText(text),
-      onReplyAudio: (audio) => this.onReplyAudio(audio),
+      onReplyAudio: (audio, isFinalChunk) => this.onReplyAudio(audio, isFinalChunk),
       onError: (error) => this.onBackendError(error),
     });
     this.sendJson({
@@ -287,6 +302,8 @@ export class ConnectionRelay {
   private startEndOfUtterance(): void {
     const audio = concatFrames(this.buffer);
     this.resetUtteranceState();
+    this.turnGeneration++;
+    this.awaitingFirstReplyChunk = true; // only now is an incoming reply chunk allowed to open SPEAKING -- see speak()
     this.setState('PROCESSING');
     this.backend?.endUtterance(audio);
   }
@@ -314,8 +331,8 @@ export class ConnectionRelay {
     this.sendJson({ event: 'REPLY_TEXT', text });
   }
 
-  private onReplyAudio(audio: Uint8Array): void {
-    void this.speak(audio).catch((err) => {
+  private onReplyAudio(audio: Uint8Array, isFinalChunk: boolean): void {
+    void this.speak(audio, isFinalChunk).catch((err) => {
       this.deps.log?.warn({ err }, 'relay: speak() failed unexpectedly');
     });
   }
@@ -330,27 +347,65 @@ export class ConnectionRelay {
     }
   }
 
-  private async speak(audioBytes: Uint8Array): Promise<void> {
-    this.setState('SPEAKING');
+  /**
+   * A turn's reply can now arrive as multiple chunks (one per sentence, streamed as each
+   * is synthesized) instead of always exactly one. speak() is called once per chunk, via
+   * independent fire-and-forget onReplyAudio() invocations, so it has to reassemble "one
+   * turn's worth of speaking" out of calls that arrive at unpredictable times without
+   * corrupting an earlier/later chunk of the SAME turn, or a stale chunk resurfacing
+   * audio from a turn the user already interrupted.
+   *
+   * The key invariant is `awaitingFirstReplyChunk`: an incoming chunk is only ever
+   * allowed to OPEN a new SPEAKING window when that flag is true, and it's true ONLY in
+   * the window between startEndOfUtterance() dispatching a turn and this method claiming
+   * that turn's first chunk. `state !== 'SPEAKING'` alone is NOT a safe proxy for "this
+   * is a legitimate new turn's first chunk" -- triggerBargeIn() also resets state to
+   * LISTENING, and a stale chunk (already in flight server-side when the abort fired)
+   * arriving in that same window would otherwise be mistaken for a fresh turn and
+   * re-open SPEAKING with content the user just interrupted. triggerBargeIn() explicitly
+   * clears `awaitingFirstReplyChunk` too, so nothing can claim the lock again until the
+   * NEXT real utterance actually completes and dispatches its own turn.
+   */
+  private async speak(audioBytes: Uint8Array, isFinalChunk: boolean): Promise<void> {
+    if (this.speakingGeneration === null) {
+      if (!this.awaitingFirstReplyChunk) return; // stale -- no turn is currently expecting a reply
+      this.awaitingFirstReplyChunk = false;
+      this.speakingGeneration = this.turnGeneration;
+      this.setState('SPEAKING');
+      this.turnAudioDurationMs = 0;
+      this.turnSpeakingStartedAt = Date.now();
+      this.bargeInArmed = false;
+      this.speechRunMs = 0;
+      if (this.bargeInTimer) clearTimeout(this.bargeInTimer);
+      // Armed once, early in the turn -- not deferred until the LAST of possibly several
+      // chunks -- so multi-sentence replies don't regress barge-in responsiveness versus
+      // today's single-chunk case.
+      this.bargeInTimer = setTimeout(() => {
+        if (this.state === 'SPEAKING') this.bargeInArmed = true;
+      }, this.config.bargeInGraceMs);
+    } else if (this.speakingGeneration !== this.turnGeneration) {
+      // Defensive: the turn we'd locked onto has since been superseded some other way.
+      return;
+    }
+
     for (let i = 0; i < audioBytes.length; i += this.config.outboundChunkBytes) {
       const chunk = audioBytes.subarray(i, i + this.config.outboundChunkBytes);
       this.deps.send(encodeBinaryFrame(BinaryFrameType.AUDIO_OUTPUT_PCM16, chunk));
     }
+    // 16-bit mono PCM16 @16kHz.
+    this.turnAudioDurationMs += (audioBytes.length / 2 / 16000) * 1000;
+
+    if (!isFinalChunk) return;
 
     // Sending is near-instant, but the client's jitter-buffer playback continues for the
-    // real clip duration afterward -- SPEAKING (and the barge-in-armed window) must last
-    // that long, not just as long as the send loop took. 16-bit mono PCM16 @16kHz.
-    const durationMs = (audioBytes.length / 2 / 16000) * 1000;
-    this.bargeInArmed = false;
-    this.speechRunMs = 0;
-    if (this.bargeInTimer) clearTimeout(this.bargeInTimer);
-    this.bargeInTimer = setTimeout(() => {
-      if (this.state === 'SPEAKING') this.bargeInArmed = true;
-    }, this.config.bargeInGraceMs);
-
-    await delay(durationMs);
-    if (this.state === 'SPEAKING') {
-      // No-op if triggerBargeIn already moved the state on while we were waiting.
+    // turn's full accumulated duration afterward -- SPEAKING must last that long. Timed
+    // from when speaking STARTED, not just this chunk's own length, since earlier chunks
+    // may already have been playing for a while by the time the last one is sent.
+    const remainingMs = Math.max(0, this.turnAudioDurationMs - (Date.now() - this.turnSpeakingStartedAt));
+    await delay(remainingMs);
+    if (this.state === 'SPEAKING' && this.speakingGeneration !== null) {
+      // No-op if triggerBargeIn already released the lock while we waited.
+      this.speakingGeneration = null; // ready for the NEXT turn's first chunk to claim
       this.setState('LISTENING');
     }
   }
@@ -365,6 +420,16 @@ export class ConnectionRelay {
       clearTimeout(this.bargeInTimer);
       this.bargeInTimer = undefined;
     }
+    // Release the lock immediately and stop expecting a reply until the NEXT real
+    // utterance dispatches its own turn -- this (not a generation-number comparison
+    // alone) is what stops a chunk still in flight from the interrupted turn from being
+    // mistaken for a fresh one and reopening SPEAKING with audio the user just cut off.
+    this.speakingGeneration = null;
+    this.awaitingFirstReplyChunk = false;
+    // Tells the backend to stop generating/synthesizing further chunks for the
+    // interrupted turn -- the primary defense (stops chunks at the source); the guard
+    // above is then just a backstop for the one chunk that may already be in flight.
+    this.backend?.abortActiveTurn();
   }
 
   private resetUtteranceState(): void {

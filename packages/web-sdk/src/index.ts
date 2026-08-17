@@ -22,9 +22,12 @@ export interface TeraConfig {
   /** Override path to the AudioWorklet module if you're not using the SDK's bundled asset. */
   workletUrl?: string | URL;
   onTranscript?: (text: string, isFinal: boolean) => void;
-  /** The assistant's reply for a turn, as text -- fires once per turn, independently of
-   * (and before) the AUDIO_OUTPUT_PCM16 binary frames that carry its spoken audio. */
-  onReplyText?: (text: string) => void;
+  /** The assistant's reply for a turn, as text -- may now fire multiple times per turn
+   * (one per sentence, as each is synthesized) instead of exactly once; `isFinal`
+   * distinguishes "more of this reply is still coming" from "this is the last piece".
+   * Each call still fires independently of (and before) the AUDIO_OUTPUT_PCM16 binary
+   * frame that carries that same piece's spoken audio. */
+  onReplyText?: (text: string, isFinal: boolean) => void;
   onFormAutofill?: (fields: PatientFormFields) => void;
   onStateChange?: (state: TeraState) => void;
   onError?: (error: { code: string; message: string; recoverable: boolean }) => void;
@@ -186,7 +189,11 @@ export class TeraWebSDK {
         this.config.onTranscript?.(msg.text, msg.is_final);
         break;
       case 'REPLY_TEXT':
-        this.config.onReplyText?.(msg.text);
+        // final is optional on the wire (see ReplyTextEvent's doc comment in
+        // @vita/protocol) -- default true so a sender that omits it still reads as "one
+        // complete reply" rather than leaving a host app's UI waiting indefinitely for a
+        // final chunk that will never come.
+        this.config.onReplyText?.(msg.text, msg.final ?? true);
         break;
       case 'UI_FORM_AUTOFILL':
         if (this.config.userRole === 'ROLE_RECEPTIONIST') {

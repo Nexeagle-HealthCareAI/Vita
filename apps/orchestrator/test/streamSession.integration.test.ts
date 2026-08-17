@@ -4,7 +4,7 @@ import RedisMock from 'ioredis-mock';
 import WebSocket from 'ws';
 import { BinaryFrameType, decodeBinaryFrame, encodeBinaryFrame } from '@vita/protocol';
 import { buildServer } from '../src/index.js';
-import { mockGroq, mockStt, mockTts, mockHms } from './helpers.js';
+import { mockGroq, mockGroqStream, mockStt, mockTts, mockHms } from './helpers.js';
 import type { SarvamRealtimeSttSession } from '../src/stt/sarvamRealtime.js';
 import type { ConnectionOpenGate } from '../src/connectionGate.js';
 
@@ -88,8 +88,12 @@ describe('orchestrator streaming STT route (GET /session/:id/stream)', () => {
     await app?.close();
   });
 
-  it('full round trip: stream.ready -> transcript.final -> one binary reply, via the real runTurn pipeline', async () => {
-    const brain = mockGroq([{ content: 'Sure, one moment.', toolCalls: [] }]);
+  it('full round trip: stream.ready -> transcript.final -> one final turn.reply + binary chunk, via the real streaming runTurn pipeline', async () => {
+    // "Sure, one moment." has no trailing whitespace after its period in this single
+    // content delta, so splitCompletedSentences never sees a confirmed boundary mid-
+    // stream -- it's flushed whole as the turn's one (isFinal:true) chunk once the
+    // stream ends, exactly mirroring what a real one-sentence reply looks like.
+    const brain = mockGroqStream([[{ contentDelta: 'Sure, one moment.', done: false }, { done: true, toolCalls: undefined }]]);
     const tts = mockTts(new Uint8Array([9, 9, 9]));
     const hms = mockHms();
     const sarvamRealtime = fakeSarvamRealtime({ finalTranscriptOnSpeechEnd: 'is dr patel around' });
@@ -124,7 +128,7 @@ describe('orchestrator streaming STT route (GET /session/:id/stream)', () => {
     expect(c.jsonMessages.find((m) => m.event === 'transcript.final')).toEqual({ event: 'transcript.final', text: 'is dr patel around' });
 
     await c.waitForEvent('turn.reply');
-    expect(c.jsonMessages.find((m) => m.event === 'turn.reply')).toEqual({ event: 'turn.reply', text: 'Sure, one moment.' });
+    expect(c.jsonMessages.find((m) => m.event === 'turn.reply')).toEqual({ event: 'turn.reply', text: 'Sure, one moment.', final: true });
 
     await vi.waitFor(() => expect(c.binaryFrames.length).toBeGreaterThan(0));
     const { type, payload } = decodeBinaryFrame(c.binaryFrames[0]);
@@ -133,7 +137,50 @@ describe('orchestrator streaming STT route (GET /session/:id/stream)', () => {
 
     expect(sarvamRealtime.sendSpeechStart).toHaveBeenCalledTimes(1);
     expect(sarvamRealtime.sendAudio).toHaveBeenCalledWith(new Uint8Array([1, 2, 3]));
-    expect(brain.chat).toHaveBeenCalledTimes(1);
+    expect(brain.chatStream).toHaveBeenCalledTimes(1);
+  });
+
+  it('a multi-sentence reply streams one turn.reply + binary chunk pair per sentence, only the last marked final', async () => {
+    const brain = mockGroqStream([
+      [
+        { contentDelta: 'Sure, one moment. ', done: false },
+        { contentDelta: "I'll check that for you.", done: false },
+        { done: true, toolCalls: undefined },
+      ],
+    ]);
+    const tts = mockTts(new Uint8Array([9, 9, 9]));
+    const sarvamRealtime = fakeSarvamRealtime({ finalTranscriptOnSpeechEnd: 'is dr patel around' });
+
+    app = buildServer(new RedisMock(), {
+      brain,
+      stt: mockStt(),
+      tts,
+      hms: mockHms(),
+      streamingSttSessionFactory: () => sarvamRealtime,
+      connectionGate: fakeGate(),
+    });
+    await createSession(app);
+    await app.listen({ port: 0 });
+    const address = app.server.address();
+    if (typeof address !== 'object' || address === null) throw new Error('no server address');
+
+    ws = new WebSocket(`ws://127.0.0.1:${address.port}/session/sess-1/stream`);
+    ws.binaryType = 'nodebuffer';
+    const c = collector(ws);
+    await new Promise<void>((resolve, reject) => {
+      ws!.on('open', resolve);
+      ws!.on('error', reject);
+    });
+
+    await c.waitForEvent('stream.ready');
+    ws.send(JSON.stringify({ event: 'speech_start' }));
+    ws.send(JSON.stringify({ event: 'speech_end' }));
+
+    await vi.waitFor(() => expect(c.jsonMessages.filter((m) => m.event === 'turn.reply').length).toBe(2));
+    const replies = c.jsonMessages.filter((m) => m.event === 'turn.reply');
+    expect(replies[0]).toEqual({ event: 'turn.reply', text: 'Sure, one moment. ', final: false });
+    expect(replies[1]).toEqual({ event: 'turn.reply', text: "I'll check that for you.", final: true });
+    expect(c.binaryFrames.length).toBe(2); // one paired frame per chunk, in the same order
   });
 
   it('closes with 4004 when the session does not exist', async () => {
@@ -228,7 +275,7 @@ describe('orchestrator streaming STT route (GET /session/:id/stream)', () => {
     await c.waitForEvent('transcript.final');
     expect(c.jsonMessages.find((m) => m.event === 'transcript.final')).toEqual({ event: 'transcript.final', text: '' });
     expect(c.binaryFrames.length).toBe(0);
-    expect(brain.chat).not.toHaveBeenCalled();
+    expect(brain.chatStream).not.toHaveBeenCalled();
   });
 
   it('a fatal mid-call Sarvam disconnect marks the call dead and sends a recoverable turn.error', async () => {

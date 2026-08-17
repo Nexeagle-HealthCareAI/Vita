@@ -17,13 +17,19 @@ export interface TurnBackendEvents {
   /** '' == soft no-op -- VAD armed an utterance but STT heard no words, same convention
    * TurnAudioResult.transcript already uses. */
   onFinalTranscript(text: string): void;
-  /** The assistant's reply as text, fired once per turn alongside (before) onReplyAudio --
-   * lets a host app display what Vita said, not just hear it. */
+  /** The assistant's reply as text -- fired once per turn for BatchTurnBackend, but
+   * possibly several times per turn for StreamingTurnBackend (one per sentence, as each
+   * is synthesized), alongside (before) each matching onReplyAudio call. Lets a host app
+   * display what Vita said, not just hear it. */
   onReplyText(text: string): void;
-  /** Whole synthesized reply for the turn; ConnectionRelay.speak() still owns chunking
-   * it for browser-facing playback -- see docs/BUILD_GUIDE.md plan notes on why
-   * chunking stays there, not here. */
-  onReplyAudio(audio: Uint8Array): void;
+  /** One chunk of synthesized reply audio; ConnectionRelay.speak() still owns chunking
+   * it further for browser-facing playback -- see docs/BUILD_GUIDE.md plan notes on why
+   * chunking stays there, not here. isFinalChunk marks the last chunk of the turn's
+   * audio -- BatchTurnBackend always passes true (it only ever has one chunk);
+   * StreamingTurnBackend passes it straight through from the orchestrator's own
+   * turn.reply{final} signal. ConnectionRelay needs this to know when it's safe to
+   * transition SPEAKING back to LISTENING (see relay.ts's speak()). */
+  onReplyAudio(audio: Uint8Array, isFinalChunk: boolean): void;
   onError(error: RelayError): void;
 }
 
@@ -41,6 +47,12 @@ export interface TurnBackend {
    * ignores it (already streamed via pushFrame) -- an accepted ISP tradeoff for only
    * two implementations, not hidden. */
   endUtterance(fullAudio: Uint8Array): void;
+  /** Tells the backend to stop generating/synthesizing further reply chunks for the
+   * turn currently in flight (a user barge-in). BatchTurnBackend is a no-op -- a batch
+   * call has nothing in flight to abort by the time onReplyAudio could ever fire,
+   * same accepted ISP tradeoff as endUtterance's unused fullAudio param above.
+   * StreamingTurnBackend forwards it to the orchestrator over the same WS connection. */
+  abortActiveTurn(): void;
   /** Call-teardown, mirrors ConnectionRelay.close()'s existing fire-and-forget pattern. */
   close(): void;
 }
@@ -83,13 +95,18 @@ export class BatchTurnBackend implements TurnBackend {
         // "no reply".
         if (result.data.transcript.trim()) {
           this.events.onReplyText(result.data.replyText!);
-          this.events.onReplyAudio(Buffer.from(result.data.audioBase64!, 'base64'));
+          this.events.onReplyAudio(Buffer.from(result.data.audioBase64!, 'base64'), true);
         }
       },
       (err) => {
         this.events.onError({ code: 'BACKEND_FAILURE', message: String(err), recoverable: true });
       },
     );
+  }
+
+  abortActiveTurn(): void {
+    // No-op -- postAudioTurn() above is a single request/response call; by the time
+    // there's anything to abort, the reply has already been fully generated and sent.
   }
 
   close(): void {

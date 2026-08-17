@@ -26,8 +26,18 @@ describe('server control event schema', () => {
     expect(parsed.success).toBe(true);
   });
 
-  it('accepts a valid REPLY_TEXT event', () => {
+  it('accepts a valid REPLY_TEXT event with no final field (backward compatible)', () => {
     const parsed = ServerControlEvent.safeParse({ event: 'REPLY_TEXT', text: 'Dr. Patel is in from 9 to 1.' });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('accepts a REPLY_TEXT event with final:false (a non-last sentence chunk)', () => {
+    const parsed = ServerControlEvent.safeParse({ event: 'REPLY_TEXT', text: 'Dr. Patel is in from 9 to 1.', final: false });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('accepts a REPLY_TEXT event with final:true (the last chunk of a turn)', () => {
+    const parsed = ServerControlEvent.safeParse({ event: 'REPLY_TEXT', text: 'Anything else?', final: true });
     expect(parsed.success).toBe(true);
   });
 

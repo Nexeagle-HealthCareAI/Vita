@@ -33,6 +33,11 @@ export function ReceptionistDashboard() {
   const [jwtDraft, setJwtDraft] = useState(jwt);
   const [showDevPanel, setShowDevPanel] = useState(() => !localStorage.getItem('vita_demo_jwt'));
   const historyRef = useRef<HTMLDivElement>(null);
+  // Vita's reply can now arrive as several onReplyText calls per turn (one per sentence)
+  // instead of exactly one -- this tracks whether the most recent assistant bubble is
+  // still being appended to (isFinal:false so far) or was already closed off, so a
+  // multi-sentence reply renders as one growing bubble instead of one bubble per sentence.
+  const isReplyOpenRef = useRef(false);
 
   useEffect(() => {
     const instance = new VitaWebSDK({
@@ -51,7 +56,18 @@ export function ReceptionistDashboard() {
           setTranscript('');
         }
       },
-      onReplyText: (text) => setHistory((prev) => [...prev, { role: 'assistant', text }]),
+      onReplyText: (text, isFinal) =>
+        setHistory((prev) => {
+          if (!isReplyOpenRef.current) {
+            isReplyOpenRef.current = !isFinal;
+            return [...prev, { role: 'assistant', text }];
+          }
+          isReplyOpenRef.current = !isFinal;
+          const updated = [...prev];
+          const last = updated[updated.length - 1]!;
+          updated[updated.length - 1] = { ...last, text: last.text + text };
+          return updated;
+        }),
       onFormAutofill: (fields) => setFormData((prev) => ({ ...prev, ...fields })),
       onStateChange: (s) => setState(s),
       onError: (e) => setLastError(`${e.code}: ${e.message}`),
