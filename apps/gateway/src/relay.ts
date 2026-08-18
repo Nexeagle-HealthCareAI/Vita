@@ -152,6 +152,7 @@ export class ConnectionRelay {
       onFinalTranscript: (text) => this.onFinalTranscript(text),
       onReplyText: (text) => this.onReplyText(text),
       onReplyAudio: (audio, isFinalChunk) => this.onReplyAudio(audio, isFinalChunk),
+      onFormAutofill: (data) => this.onFormAutofill(data),
       onError: (error) => this.onBackendError(error),
     });
     this.sendJson({
@@ -335,6 +336,15 @@ export class ConnectionRelay {
     void this.speak(audio, isFinalChunk).catch((err) => {
       this.deps.log?.warn({ err }, 'relay: speak() failed unexpectedly');
     });
+  }
+
+  private onFormAutofill(data: Record<string, unknown>): void {
+    // Redundant, defense-in-depth check -- the orchestrator's own role gate (session.role,
+    // see apps/orchestrator/src/index.ts's computeFormFields) is authoritative and already
+    // prevents this from firing for a ROLE_DOCTOR session; this is a second, cheap check on
+    // the already-in-scope, server-verified claims.role, not the primary enforcement point.
+    if (this.deps.claims.role !== 'ROLE_RECEPTIONIST') return;
+    this.sendJson({ event: 'UI_FORM_AUTOFILL', data });
   }
 
   private onBackendError(error: RelayError): void {

@@ -21,6 +21,7 @@ function fakeEvents(): TurnBackendEvents {
     onFinalTranscript: vi.fn(),
     onReplyText: vi.fn(),
     onReplyAudio: vi.fn(),
+    onFormAutofill: vi.fn(),
     onError: vi.fn(),
   };
 }
@@ -71,7 +72,7 @@ describe('StreamingTurnBackend', () => {
     expect(events.onFinalTranscript).toHaveBeenCalledWith('hello');
   });
 
-  it('handlePartialTranscript/handleReplyText/handleReplyAudio/handleTurnError route straight through to events', () => {
+  it('handlePartialTranscript/handleReplyText/handleReplyAudio/handleFormAutofill/handleTurnError route straight through to events', () => {
     const stream = fakeStream();
     const events = fakeEvents();
     const backend = new StreamingTurnBackend(stream, events);
@@ -87,6 +88,9 @@ describe('StreamingTurnBackend', () => {
 
     backend.handleReplyAudio(new Uint8Array([10]), true);
     expect(events.onReplyAudio).toHaveBeenCalledWith(new Uint8Array([10]), true);
+
+    backend.handleFormAutofill({ patientName: 'Riya Sharma' });
+    expect(events.onFormAutofill).toHaveBeenCalledWith({ patientName: 'Riya Sharma' });
 
     backend.handleTurnError('TURN_FAILED', 'boom', true);
     expect(events.onError).toHaveBeenCalledWith({ code: 'TURN_FAILED', message: 'boom', recoverable: true });

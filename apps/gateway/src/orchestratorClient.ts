@@ -10,6 +10,10 @@ export interface TurnAudioResult {
   replyText: string | null; // null iff transcript === ''
   audioBase64: string | null; // null iff transcript === ''
   toolCallsExecuted: string[];
+  /** New/changed slot values from this turn (e.g. patientName, patientMobile), already
+   * role-gated to ROLE_RECEPTIONIST by the orchestrator -- null when nothing changed.
+   * Powers TurnBackendEvents.onFormAutofill (see turnBackend.ts). */
+  formFields: Record<string, unknown> | null;
 }
 
 export interface RelayError {

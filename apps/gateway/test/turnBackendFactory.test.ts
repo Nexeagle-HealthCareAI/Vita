@@ -9,7 +9,14 @@ function fakeOrchestrator() {
 }
 
 function fakeEvents(): TurnBackendEvents {
-  return { onPartialTranscript: vi.fn(), onFinalTranscript: vi.fn(), onReplyText: vi.fn(), onReplyAudio: vi.fn(), onError: vi.fn() };
+  return {
+    onPartialTranscript: vi.fn(),
+    onFinalTranscript: vi.fn(),
+    onReplyText: vi.fn(),
+    onReplyAudio: vi.fn(),
+    onFormAutofill: vi.fn(),
+    onError: vi.fn(),
+  };
 }
 
 function fakeStreamClient(outcome: StreamConnectOutcome) {

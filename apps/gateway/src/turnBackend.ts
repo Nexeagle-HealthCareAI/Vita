@@ -30,6 +30,14 @@ export interface TurnBackendEvents {
    * turn.reply{final} signal. ConnectionRelay needs this to know when it's safe to
    * transition SPEAKING back to LISTENING (see relay.ts's speak()). */
   onReplyAudio(audio: Uint8Array, isFinalChunk: boolean): void;
+  /** New/changed slot values (patient name, mobile, etc.) established this turn --
+   * powers UI_FORM_AUTOFILL (see relay.ts's onFormAutofill). Optional, not required --
+   * adding a required method here would break every existing TurnBackendEvents object
+   * literal at compile time (same precedent as ReplyTextEvent.final in
+   * packages/protocol/src/events.ts: an optional field/method lets an out-of-lockstep
+   * implementation degrade gracefully instead of failing to compile). Fired at most once
+   * per turn, only when there's something new. */
+  onFormAutofill?(fields: Record<string, unknown>): void;
   onError(error: RelayError): void;
 }
 
@@ -96,6 +104,9 @@ export class BatchTurnBackend implements TurnBackend {
         if (result.data.transcript.trim()) {
           this.events.onReplyText(result.data.replyText!);
           this.events.onReplyAudio(Buffer.from(result.data.audioBase64!, 'base64'), true);
+        }
+        if (result.data.formFields) {
+          this.events.onFormAutofill?.(result.data.formFields);
         }
       },
       (err) => {

@@ -15,9 +15,9 @@ export function ReceptionistDashboard() {
   // onFormAutofill below still receives them from the SDK so re-adding the form back is
   // a small, self-contained change whenever it's wanted again.
   const [, setFormData] = useState<PatientFormFields>({
-    patient_name: '',
-    phone: '',
-    department: '',
+    patientName: '',
+    patientMobile: '',
+    specialtyCategory: '',
   });
   const [lastError, setLastError] = useState<string | null>(null);
   const [sdk, setSdk] = useState<VitaWebSDK | null>(null);

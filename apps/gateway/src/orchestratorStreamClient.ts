@@ -17,6 +17,7 @@ type OrchestratorStreamMessage =
   | { event: 'transcript.partial'; text: string }
   | { event: 'transcript.final'; text: string }
   | { event: 'turn.reply'; text: string; final: boolean }
+  | { event: 'turn.form_autofill'; data: Record<string, unknown> }
   | { event: 'turn.error'; code: string; message: string; recoverable: boolean };
 
 export interface OrchestratorStreamCallbacks {
@@ -24,6 +25,7 @@ export interface OrchestratorStreamCallbacks {
   onFinalTranscript(text: string): void;
   onReplyText(text: string): void;
   onReplyAudio(audio: Uint8Array, isFinalChunk: boolean): void;
+  onFormAutofill(data: Record<string, unknown>): void;
   onTurnError(code: string, message: string, recoverable: boolean): void;
   /** Fires on any close/error *after* a successful connect -- never for the initial
    * connect-failure case, which connect() itself resolves as 'unavailable' instead. */
@@ -95,6 +97,9 @@ export class OrchestratorStreamClient {
           case 'turn.reply':
             this.pendingReplyFinal = msg.final;
             this.callbacks?.onReplyText(msg.text);
+            break;
+          case 'turn.form_autofill':
+            this.callbacks?.onFormAutofill(msg.data);
             break;
           case 'turn.error':
             this.callbacks?.onTurnError(msg.code, msg.message, msg.recoverable);

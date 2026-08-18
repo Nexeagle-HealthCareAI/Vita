@@ -19,7 +19,7 @@ function fakeOrchestrator(turnResult?: TurnAudioResponse) {
   client.createSession = vi.fn().mockResolvedValue({ sessionId: 'sess-1', resumeToken: 'resume-tok-1' });
   client.resumeSession = vi.fn().mockResolvedValue(null);
   client.postAudioTurn = vi.fn().mockResolvedValue(
-    turnResult ?? { ok: true, data: { transcript: '', replyText: null, audioBase64: null, toolCallsExecuted: [] } },
+    turnResult ?? { ok: true, data: { transcript: '', replyText: null, audioBase64: null, toolCallsExecuted: [], formFields: null } },
   );
   return client;
 }
@@ -230,6 +230,77 @@ describe('ConnectionRelay', () => {
 
     await vi.advanceTimersByTimeAsync(5);
     expect(jsonSends(sent).at(-1)).toEqual({ event: 'STATE_CHANGE', state: 'LISTENING' });
+  });
+
+  it('a turn with new slot values sends UI_FORM_AUTOFILL for a ROLE_RECEPTIONIST session', async () => {
+    const audio = new Uint8Array(3200);
+    const orchestrator = fakeOrchestrator({
+      ok: true,
+      data: {
+        transcript: 'book Riya Sharma',
+        replyText: 'Booked.',
+        audioBase64: Buffer.from(audio).toString('base64'),
+        toolCallsExecuted: ['book_appointment'],
+        formFields: { patientName: 'Riya Sharma', patientMobile: '9999999999' },
+      },
+    });
+    const audioPreprocess = fakeAudioPreprocess();
+    (audioPreprocess.process as ReturnType<typeof vi.fn>).mockResolvedValue({ frame: frame(1), speechDetected: true });
+
+    const sent: (string | Uint8Array)[] = [];
+    const relay = new ConnectionRelay(
+      { audioPreprocess, orchestrator, backendFactory: fakeBackendFactory(orchestrator), claims: CLAIMS, send: (d) => sent.push(d) },
+      { minUtteranceSpeechMs: 20, silenceHangoverMs: 20 },
+    );
+    await relay.start();
+
+    await sendFrame(relay, frame(1)); // arms
+    (audioPreprocess.process as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ frame: frame(2), speechDetected: false });
+    await sendFrame(relay, frame(2)); // ends utterance
+
+    expect(jsonSends(sent)).toContainEqual({
+      event: 'UI_FORM_AUTOFILL',
+      data: { patientName: 'Riya Sharma', patientMobile: '9999999999' },
+    });
+  });
+
+  it('suppresses UI_FORM_AUTOFILL for a ROLE_DOCTOR session even if the orchestrator response carries formFields', async () => {
+    // Shouldn't happen for a real call (the orchestrator's own role gate already nulls
+    // formFields for a ROLE_DOCTOR session before this response is ever built) -- proves
+    // the gateway's own redundant, defense-in-depth check (relay.ts's onFormAutofill)
+    // works too, independent of the orchestrator's gate.
+    const audio = new Uint8Array(3200);
+    const orchestrator = fakeOrchestrator({
+      ok: true,
+      data: {
+        transcript: 'is dr patel free',
+        replyText: 'Yes.',
+        audioBase64: Buffer.from(audio).toString('base64'),
+        toolCallsExecuted: ['check_doctor_availability'],
+        formFields: { doctorId: 'd-1' },
+      },
+    });
+    const audioPreprocess = fakeAudioPreprocess();
+    (audioPreprocess.process as ReturnType<typeof vi.fn>).mockResolvedValue({ frame: frame(1), speechDetected: true });
+
+    const sent: (string | Uint8Array)[] = [];
+    const relay = new ConnectionRelay(
+      {
+        audioPreprocess,
+        orchestrator,
+        backendFactory: fakeBackendFactory(orchestrator),
+        claims: { sub: 'user-1', role: 'ROLE_DOCTOR' },
+        send: (d) => sent.push(d),
+      },
+      { minUtteranceSpeechMs: 20, silenceHangoverMs: 20 },
+    );
+    await relay.start();
+
+    await sendFrame(relay, frame(1)); // arms
+    (audioPreprocess.process as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ frame: frame(2), speechDetected: false });
+    await sendFrame(relay, frame(2)); // ends utterance
+
+    expect(jsonSends(sent).find((m) => (m as { event: string }).event === 'UI_FORM_AUTOFILL')).toBeUndefined();
   });
 
   it('an empty/whitespace transcript is a soft no-op: no TRANSCRIPT, no audio, straight back to LISTENING', async () => {
@@ -489,6 +560,21 @@ describe('ConnectionRelay', () => {
       expect(listeningEvents.length).toBe(1);
       const binaryFrames = sent.filter((s): s is Uint8Array => s instanceof Uint8Array);
       expect(binaryFrames.length).toBeGreaterThan(0);
+    });
+
+    it('onFormAutofill sends UI_FORM_AUTOFILL on the streaming path too', async () => {
+      const audioPreprocess = fakeAudioPreprocess();
+      const orchestrator = fakeOrchestrator();
+      const backendFactory = fakeStreamingBackendFactory();
+      const sent: (string | Uint8Array)[] = [];
+      const relay = new ConnectionRelay({ audioPreprocess, orchestrator, backendFactory, claims: CLAIMS, send: (d) => sent.push(d) }, CONFIG);
+      await relay.start();
+      await driveUtteranceIntoProcessing(relay, audioPreprocess, [1, 2, 3]);
+
+      const events = backendFactory.events[0]!;
+      events.onFormAutofill?.({ preferredDate: '2026-08-20' });
+
+      expect(jsonSends(sent)).toContainEqual({ event: 'UI_FORM_AUTOFILL', data: { preferredDate: '2026-08-20' } });
     });
 
     it('a barge-in mid-reply aborts the backend and silently drops the chunk already in flight', async () => {

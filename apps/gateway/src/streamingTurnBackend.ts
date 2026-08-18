@@ -83,6 +83,10 @@ export class StreamingTurnBackend implements TurnBackend {
     this.events.onReplyAudio(audio, isFinalChunk);
   }
 
+  handleFormAutofill(data: Record<string, unknown>): void {
+    this.events.onFormAutofill?.(data);
+  }
+
   handleTurnError(code: string, message: string, recoverable: boolean): void {
     this.awaitingResult = false;
     this.events.onError({ code, message, recoverable });
@@ -130,6 +134,7 @@ export class DefaultTurnBackendFactory implements TurnBackendFactory {
       onFinalTranscript: (text) => backend.handleFinalTranscript(text),
       onReplyText: (text) => backend.handleReplyText(text),
       onReplyAudio: (audio, isFinalChunk) => backend.handleReplyAudio(audio, isFinalChunk),
+      onFormAutofill: (data) => backend.handleFormAutofill(data),
       onTurnError: (code, message, recoverable) => backend.handleTurnError(code, message, recoverable),
       onDisconnected: () => backend.handleDisconnected(),
     });

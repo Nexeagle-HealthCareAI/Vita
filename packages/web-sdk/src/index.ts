@@ -4,11 +4,16 @@ import { JitterBufferPlayer } from './playback.js';
 
 export type TeraState = 'IDLE' | 'LISTENING' | 'PROCESSING' | 'SPEAKING' | 'ERROR';
 
-/** Patient registration fields pushed via UI_FORM_AUTOFILL. Extend as 1HMS grows. */
+/** Patient/booking fields pushed via UI_FORM_AUTOFILL -- named to match what the
+ * orchestrator actually sends: raw tool-call argument names (see
+ * apps/orchestrator/src/tools.ts's TOOL_SCHEMAS), not a separately-invented naming
+ * scheme, so there's no translation layer anywhere in the pipeline. Extend as 1HMS
+ * grows; the index signature already forwards any other slot the orchestrator starts
+ * tracking (doctorId, preferredTime, reason, city, ...) even before it's named here. */
 export interface PatientFormFields {
-  patient_name?: string;
-  phone?: string;
-  department?: string;
+  patientName?: string;
+  patientMobile?: string;
+  specialtyCategory?: string;
   [key: string]: unknown;
 }
 
