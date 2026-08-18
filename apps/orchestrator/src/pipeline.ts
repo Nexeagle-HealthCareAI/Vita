@@ -45,7 +45,7 @@ export interface RunTurnResult {
 
 const MAX_TOOL_ROUNDS_FALLBACK_MESSAGE = "Sorry, I'm having trouble completing that right now. Could you repeat what you need?";
 
-/** Executes every tool call in `toolCalls` against `hms`/`retriever`, RBAC-checked and
+/** Executes every tool call in `toolCalls` against `hms`/`faqRetriever`, RBAC-checked and
  * audited, appending a role:'tool' history entry per call -- shared by both the
  * non-streaming and streaming paths below, which otherwise differ significantly in how
  * they get from history to a spoken reply. */
@@ -53,14 +53,14 @@ async function runToolCalls(
   toolCalls: ToolCall[],
   session: DialogueSession,
   hms: HmsClient,
-  retriever: HybridRetriever | undefined,
+  faqRetriever: HybridRetriever | undefined,
   history: ChatMessage[],
   toolCallsExecuted: string[],
 ): Promise<void> {
   for (const call of toolCalls) {
     let resultText: string;
     try {
-      const toolResult = await executeTool(call.name, call.arguments, session.role, hms, retriever);
+      const toolResult = await executeTool(call.name, call.arguments, session.role, hms, faqRetriever);
       recordAuditEvent({
         ts: Date.now(),
         sessionId: session.sessionId,
@@ -104,7 +104,7 @@ export async function runTurn(opts: {
   hms: HmsClient;
   /** Optional so every existing caller/test keeps compiling unchanged -- see
    * executeTool's doc comment in tools.js for the same reasoning. */
-  retriever?: HybridRetriever;
+  faqRetriever?: HybridRetriever;
   /** Optional -- when provided, streams the reply sentence-by-sentence via this callback
    * as each sentence is synthesized (the real-time WS path). Absent for every HTTP JSON
    * route, which keeps runTurn's behavior byte-for-byte identical to before streaming
@@ -115,7 +115,7 @@ export async function runTurn(opts: {
    * onReplyChunk is also provided. */
   isAborted?: () => boolean;
 }): Promise<RunTurnResult> {
-  const { session, transcript, brain, tts, hms, retriever, onReplyChunk, isAborted } = opts;
+  const { session, transcript, brain, tts, hms, faqRetriever, onReplyChunk, isAborted } = opts;
   const model = modelForRole(session.role);
   const toolCallsExecuted: string[] = [];
 
@@ -145,7 +145,7 @@ export async function runTurn(opts: {
         content: result.content ?? `[requested: ${result.toolCalls.map((t) => t.name).join(', ')}]`,
       });
 
-      await runToolCalls(result.toolCalls, session, hms, retriever, history, toolCallsExecuted);
+      await runToolCalls(result.toolCalls, session, hms, faqRetriever, history, toolCallsExecuted);
     }
 
     if (replyText === null) {
@@ -248,7 +248,7 @@ export async function runTurn(opts: {
       role: 'assistant',
       content: content || `[requested: ${toolCalls.map((t) => t.name).join(', ')}]`,
     });
-    await runToolCalls(toolCalls, session, hms, retriever, history, toolCallsExecuted);
+    await runToolCalls(toolCalls, session, hms, faqRetriever, history, toolCallsExecuted);
 
     if (round === MAX_TOOL_ROUNDS - 1) {
       // Hit the cap without a final answer -- same fallback as the non-streaming path.

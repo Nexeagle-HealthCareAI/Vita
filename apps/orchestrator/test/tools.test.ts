@@ -69,19 +69,19 @@ describe('executeTool', () => {
   it('dispatches search_vita_faq to the retriever and maps hits back to {question, answer} pairs', async () => {
     const hms = mockHms();
     const doc = FAQ_DOCS[0]!;
-    const retriever = mockRetriever([{ id: doc.id, text: 'irrelevant raw blob', score: 0.9 }]);
+    const faqRetriever = mockRetriever([{ id: doc.id, text: 'irrelevant raw blob', score: 0.9 }]);
 
-    const result = await executeTool('search_vita_faq', { query: doc.question }, 'ROLE_RECEPTIONIST', hms, retriever);
+    const result = await executeTool('search_vita_faq', { query: doc.question }, 'ROLE_RECEPTIONIST', hms, faqRetriever);
 
-    expect(retriever.search).toHaveBeenCalledWith(doc.question, 3);
+    expect(faqRetriever.search).toHaveBeenCalledWith(doc.question, 3);
     expect(result).toEqual([{ question: doc.question, answer: doc.answer }]);
   });
 
   it('allows both a receptionist and a doctor to call search_vita_faq', async () => {
     const hms = mockHms();
     for (const role of ['ROLE_RECEPTIONIST', 'ROLE_DOCTOR'] as const) {
-      const retriever = mockRetriever([]);
-      await expect(executeTool('search_vita_faq', { query: 'what is vita' }, role, hms, retriever)).resolves.toEqual([]);
+      const faqRetriever = mockRetriever([]);
+      await expect(executeTool('search_vita_faq', { query: 'what is vita' }, role, hms, faqRetriever)).resolves.toEqual([]);
     }
   });
 

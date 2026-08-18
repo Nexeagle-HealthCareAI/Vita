@@ -166,12 +166,12 @@ describe('runTurn — search_vita_faq (generic questions about Vita itself, not 
     ]);
     const tts = mockTts();
     const hms = mockHms();
-    const retriever = mockRetriever([{ id: doc.id, text: 'irrelevant raw blob', score: 0.9 }]);
+    const faqRetriever = mockRetriever([{ id: doc.id, text: 'irrelevant raw blob', score: 0.9 }]);
 
-    const result = await runTurn({ session: baseSession(), transcript: doc.question, brain, tts, hms, retriever });
+    const result = await runTurn({ session: baseSession(), transcript: doc.question, brain, tts, hms, faqRetriever });
 
     expect(result.toolCallsExecuted).toEqual(['search_vita_faq']);
-    expect(retriever.search).toHaveBeenCalledWith(doc.question, 3);
+    expect(faqRetriever.search).toHaveBeenCalledWith(doc.question, 3);
     expect(result.replyText).toBe(doc.answer);
     expect(tts.synthesize).toHaveBeenCalledWith(doc.answer);
   });

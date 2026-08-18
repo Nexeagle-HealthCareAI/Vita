@@ -28,7 +28,7 @@ export function buildServer(
     stt?: SttProvider;
     tts?: TtsProvider;
     hms?: HmsClient;
-    retriever?: HybridRetriever;
+    faqRetriever?: HybridRetriever;
     streamingSttSessionFactory?: () => StreamingSttSession;
     connectionGate?: ConnectionOpenGate;
   },
@@ -59,15 +59,15 @@ export function buildServer(
   // many existing tests that call it synchronously. Requires `pnpm --filter @vita/rag
   // ingest` to have populated Qdrant's dense vectors at least once (see that package's
   // README/ingest.ts) -- this constructor doesn't do that itself.
-  const retriever =
-    clients?.retriever ??
+  const faqRetriever =
+    clients?.faqRetriever ??
     (() => {
       const r = new HybridRetriever(
         new QdrantClient({
           url: process.env.QDRANT_URL ?? 'http://localhost:6333',
           apiKey: process.env.QDRANT_API_KEY || undefined,
           // No real Qdrant is reachable in most test/CI runs (this default is only ever
-          // actually hit in tests that don't override clients.retriever) -- skips a
+          // actually hit in tests that don't override clients.faqRetriever) -- skips a
           // background version-compatibility check that otherwise just console.warns.
           checkCompatibility: false,
         }),
@@ -262,7 +262,7 @@ export function buildServer(
       return reply.code(400).send({ error: 'transcript is required' });
     }
 
-    const result = await runTurn({ session, transcript, brain, tts, hms, retriever });
+    const result = await runTurn({ session, transcript, brain, tts, hms, faqRetriever });
     await sessions.update(id, { history: result.updatedHistory, turnState: 'IDLE' });
 
     return reply.send({
@@ -318,7 +318,7 @@ export function buildServer(
 
     let result;
     try {
-      result = await runTurn({ session, transcript, brain, tts, hms, retriever });
+      result = await runTurn({ session, transcript, brain, tts, hms, faqRetriever });
     } catch (err) {
       recordAuditEvent({
         ts: Date.now(),
@@ -361,7 +361,7 @@ export function buildServer(
           brain,
           tts,
           hms,
-          retriever,
+          faqRetriever,
           streamingSttSessionFactory,
           connectionGate,
           connectTimeoutMs: Number(process.env.SARVAM_CONNECT_TIMEOUT_MS ?? 1800),

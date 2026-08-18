@@ -97,7 +97,7 @@ export class UnknownToolError extends Error {
  * pipeline.ts catches and audits, same as the existing /session/:id/tool-call route
  * already does), then dispatches to the matching HmsClient method.
  *
- * `retriever` is optional (unlike `hms`) so every existing caller/test keeps compiling
+ * `faqRetriever` is optional (unlike `hms`) so every existing caller/test keeps compiling
  * unchanged -- mirrors GroqBrainProvider's optional `apiUrl` param elsewhere in this codebase.
  * If search_vita_faq is requested with no retriever supplied, that's the same drift-guard
  * UnknownToolError the switch already throws for RBAC-allowed-but-unimplemented tools
@@ -108,7 +108,7 @@ export async function executeTool(
   args: Record<string, unknown>,
   role: Role,
   hms: HmsClient,
-  retriever?: HybridRetriever,
+  faqRetriever?: HybridRetriever,
 ): Promise<unknown> {
   assertToolPermission(name, role);
 
@@ -129,9 +129,9 @@ export async function executeTool(
         },
       );
     case 'search_vita_faq': {
-      if (!retriever) throw new UnknownToolError(name);
+      if (!faqRetriever) throw new UnknownToolError(name);
       const { query } = args as { query: string };
-      const hits = await retriever.search(query, 3);
+      const hits = await faqRetriever.search(query, 3);
       // Return clean {question, answer} pairs, not HybridSearchResult's raw indexed blob --
       // keeps HybridRetriever a generic, FAQ-agnostic primitive; shaping what the LLM sees
       // is this layer's job, same separation already used for the HmsClient tools above.

@@ -34,7 +34,7 @@ export interface StreamSessionDeps {
    * streamingSttSessionFactory below, which handles STT for this same call. */
   tts: TtsProvider;
   hms: HmsClient;
-  retriever?: HybridRetriever;
+  faqRetriever?: HybridRetriever;
   streamingSttSessionFactory: () => StreamingSttSession;
   connectionGate: ConnectionOpenGate;
   connectTimeoutMs: number;
@@ -148,7 +148,7 @@ export class StreamSessionHandler {
         brain: this.deps.brain,
         tts: this.deps.tts,
         hms: this.deps.hms,
-        retriever: this.deps.retriever,
+        faqRetriever: this.deps.faqRetriever,
         // Sends each sentence's text+audio as soon as it's synthesized, instead of
         // waiting for the whole reply -- text message immediately followed by its own
         // binary audio frame, in that order, for every chunk including the last. That
