@@ -9,7 +9,7 @@ describe('runTurn — scripted conversation (golden-fixture style, per docs/BUIL
     const brain = mockGroq([
       {
         content: null,
-        toolCalls: [{ id: 'call_1', name: 'check_doctor_availability', arguments: { doctorId: 'd-1', date: '2026-08-20' } }],
+        toolCalls: [{ id: 'call_1', name: 'check_doctor_availability', arguments: { doctorId: 'd-1', preferredDate: '2026-08-20' } }],
       },
       { content: 'Dr. Patel is in from 9 to 1 that day.', toolCalls: [] },
     ]);
@@ -143,7 +143,7 @@ describe('runTurn — round cap (a live call must never hang)', () => {
     // Groq keeps requesting the same tool call every round, never producing a final answer.
     const alwaysToolCall: ChatResult = {
       content: null,
-      toolCalls: [{ id: 'call_x', name: 'check_doctor_availability', arguments: { doctorId: 'd-1', date: '2026-08-20' } }],
+      toolCalls: [{ id: 'call_x', name: 'check_doctor_availability', arguments: { doctorId: 'd-1', preferredDate: '2026-08-20' } }],
     };
     const brain = mockGroq([alwaysToolCall, alwaysToolCall, alwaysToolCall, alwaysToolCall, alwaysToolCall]);
     const tts = mockTts();
@@ -154,6 +154,71 @@ describe('runTurn — round cap (a live call must never hang)', () => {
     expect(result.replyText).toMatch(/trouble completing|repeat/i);
     // Exactly 3 rounds of brain.chat -- the cap, not unbounded.
     expect((brain.chat as ReturnType<typeof vi.fn>).mock.calls.length).toBe(3);
+  });
+});
+
+describe('runTurn — slot-tracking across turns', () => {
+  it('backfills a later book_appointment call from a doctorId/preferredDate set during an earlier check_doctor_availability turn', async () => {
+    const brain1 = mockGroq([
+      { content: null, toolCalls: [{ id: 'call_1', name: 'check_doctor_availability', arguments: { doctorId: 'd-1', preferredDate: '2026-08-20' } }] },
+      { content: 'Dr. Patel is free that day.', toolCalls: [] },
+    ]);
+    const tts = mockTts();
+    const hms = mockHms();
+    const session1 = baseSession();
+
+    const result1 = await runTurn({ session: session1, transcript: 'Is Dr. Patel free on the 20th?', brain: brain1, tts, hms });
+    expect(result1.updatedSlots).toMatchObject({ doctorId: 'd-1', preferredDate: '2026-08-20' });
+
+    // A genuinely separate turn -- feeds turn 1's history/slots back in, the same way the
+    // real /session/:id/turn route persists and reloads a session between HTTP calls. The
+    // LLM's book_appointment call this time omits doctorId/preferredDate entirely, as it
+    // plausibly would having already established them earlier in this same conversation.
+    const session2 = { ...session1, history: result1.updatedHistory, slots: result1.updatedSlots };
+    const brain2 = mockGroq([
+      { content: null, toolCalls: [{ id: 'call_2', name: 'book_appointment', arguments: { patientName: 'Riya Sharma', patientMobile: '9999999999' } }] },
+      { content: "Booked -- we'll confirm the exact time with you shortly.", toolCalls: [] },
+    ]);
+
+    const result2 = await runTurn({ session: session2, transcript: 'Book it for Riya Sharma, mobile 9999999999', brain: brain2, tts, hms });
+
+    expect(hms.bookAppointment).toHaveBeenCalledWith({
+      doctorId: 'd-1',
+      preferredDate: '2026-08-20',
+      patientName: 'Riya Sharma',
+      patientMobile: '9999999999',
+    });
+    expect(result2.toolCallsExecuted).toEqual(['book_appointment']);
+  });
+
+  it('short-circuits book_appointment -- never calling the real HMS API -- when a required field is missing from both the call and known slots', async () => {
+    const brain = mockGroq([
+      {
+        content: null,
+        toolCalls: [
+          { id: 'call_1', name: 'book_appointment', arguments: { doctorId: 'd-1', patientName: 'Riya Sharma', preferredDate: '2026-08-20' } },
+        ],
+      },
+      { content: 'Could I also get a mobile number for the booking?', toolCalls: [] },
+    ]);
+    const tts = mockTts();
+    const hms = mockHms();
+    const auditSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const result = await runTurn({ session: baseSession(), transcript: 'Book Riya Sharma with Dr. Patel on the 20th', brain, tts, hms });
+
+    expect(hms.bookAppointment).not.toHaveBeenCalled();
+    expect(result.toolCallsExecuted).toEqual([]); // short-circuited before dispatch, never counted as executed
+    const toolResultMessage = result.updatedHistory.find((m) => m.role === 'tool' && m.tool_call_id === 'call_1');
+    expect(JSON.parse(toolResultMessage!.content)).toMatchObject({ missingFields: ['patientMobile'] });
+
+    const auditLines = auditSpy.mock.calls.map((c) => JSON.parse(c[0] as string));
+    expect(auditLines).toContainEqual(
+      expect.objectContaining({ type: 'AUDIT', action: 'tool_call:book_appointment', outcome: 'error' }),
+    );
+    auditSpy.mockRestore();
+
+    expect(result.replyText).toContain('mobile');
   });
 });
 

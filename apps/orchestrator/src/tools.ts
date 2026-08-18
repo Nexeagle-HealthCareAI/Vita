@@ -41,9 +41,14 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
         type: 'object',
         properties: {
           doctorId: { type: 'string' },
-          date: { type: 'string', description: 'YYYY-MM-DD' },
+          // Named preferredDate (not `date`), matching book_appointment's own field --
+          // this shared name is what lets slot-tracking (pipeline.ts's backfillArgsFromSlots)
+          // carry a date across "is Dr. X free on the 20th?" -> "book that" without the LLM
+          // having to re-derive it. Mapped back to HmsClient's own `date` field in executeTool
+          // below -- packages/mcp-1hms's contract stays untouched.
+          preferredDate: { type: 'string', description: 'YYYY-MM-DD' },
         },
-        required: ['doctorId', 'date'],
+        required: ['doctorId', 'preferredDate'],
       },
     },
   },
@@ -138,8 +143,10 @@ export async function executeTool(
   switch (name) {
     case 'find_doctors':
       return hms.findDoctors(args as { specialtyCategory?: string; city?: string; search?: string });
-    case 'check_doctor_availability':
-      return hms.checkDoctorAvailability(args as { doctorId: string; date: string });
+    case 'check_doctor_availability': {
+      const { doctorId, preferredDate } = args as { doctorId: string; preferredDate: string };
+      return hms.checkDoctorAvailability({ doctorId, date: preferredDate });
+    }
     case 'book_appointment':
       return hms.bookAppointment(
         args as {

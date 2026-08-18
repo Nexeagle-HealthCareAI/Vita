@@ -232,10 +232,90 @@ is a stub past the RBAC/audit gate — wire in:
 pattern as `packages/mcp-1hms/test/hmsClient.test.ts` — inject `fetch`).
 Then add a scripted-conversation integration test: feed a fixed sequence of
 transcripts through the orchestrator with all three externals mocked, and
-assert the resulting sequence of emitted events (slot fills, tool calls,
-`UI_FORM_AUTOFILL` payloads) matches a golden fixture. Add a **chaos test**:
-kill the Redis connection mid-session and confirm the orchestrator surfaces
-a recoverable `ERROR` event rather than hanging.
+assert the resulting sequence of emitted events (tool calls, slot fills,
+`UI_FORM_AUTOFILL` payloads) matches a golden fixture — see
+`apps/orchestrator/test/pipeline.test.ts`'s "slot-tracking across turns"
+describe block and `test/streamSession.integration.test.ts`'s
+`turn.form_autofill` tests for exactly this, now real (§3.5.1 below). Add a
+**chaos test**: kill the Redis connection mid-session and confirm the
+orchestrator surfaces a recoverable `ERROR` event rather than hanging.
+
+#### 3.5.1 Slot-tracking / turn-state synchronization — done
+
+`DialogueSession.slots: Record<string, unknown>` (`session.ts`) was a
+placeholder field, round-tripping through Redis (encryption-at-rest
+included) but never read or written by any code, until this pass.
+`apps/orchestrator/src/slots.ts` now backs it with real behavior, all driven
+by `pipeline.ts`'s `runToolCalls()`:
+
+- **Backfill**: before dispatching a tool call, any of its own known
+  parameters left empty by the LLM are filled from `slots` if something
+  earlier in the SAME session already established a value (e.g. a `doctorId`
+  found via `find_doctors` two turns ago). A deterministic safety net
+  against a small model (`llama-3.1-8b-instant`) mistyping or hallucinating
+  a value it should just be copying forward — never a way to let the LLM
+  skip supplying arguments in the first place (`SYSTEM_PROMPT` explicitly
+  tells it not to invent tool-call arguments either). `check_doctor_availability`'s
+  `date` parameter was renamed to `preferredDate` specifically so it shares
+  a name with `book_appointment`'s own field — without that, "is Dr. X free
+  on the 20th?" → "book that" would get zero benefit from this at all.
+- **Pre-dispatch validation**: after backfill, a tool call still missing a
+  required parameter never reaches `executeTool`/the real 1HMS API — it's
+  short-circuited with a structured `{ error, missingFields }` tool result
+  instead, closing a real, previously-silent backend bug (easyHMSAPI only
+  validates `doctorId`/`patientMobile` server-side; a missing `preferredDate`
+  used to silently proceed with a zero-value date).
+- **Merge + booking-scoped clear**: a call's (backfilled) arguments are
+  merged into `slots` after dispatch, last-write-wins, never erasing an
+  existing value with an empty one. `slots.ts`'s `clearBookingSlots()` wipes
+  the booking-identity keys (`doctorId`/`patientName`/`patientMobile`/
+  `preferredDate`/`preferredTime`/`reason`) after every *successful*
+  `book_appointment`, so a second patient booked later in the same call
+  never silently inherits the first patient's stale contact info via
+  backfill. **Known, accepted residual risk**: a doctor-pivot mid-flow
+  (check availability for Dr. A, decide on Dr. C instead, then a
+  `book_appointment` call that omits `doctorId`) can still backfill the
+  wrong doctor until a booking actually completes — solving that would need
+  real intent-tracking, out of scope for what's fundamentally an
+  LLM-reliability safety net, not a hard guarantee system.
+
+**`UI_FORM_AUTOFILL` emission** (the "Web Screen Sync Emitter" box in
+`docs/ARCHITECTURE.md`'s topology diagram) is now wired end-to-end — the
+wire format (`packages/protocol/src/events.ts`'s `FormAutofillEvent`) and
+client listener (`packages/web-sdk`) already existed, nothing sent it until
+this pass:
+
+- `pipeline.ts`'s `runTurn()` tracks a second, `touchedSlots` accumulator
+  alongside `slots` — it mirrors every merge but is never reset by
+  `clearBookingSlots`, specifically so a just-booked patient's details still
+  reach the UI once even if a receptionist states an entire booking in one
+  breath (set-then-cleared within the SAME turn). `RunTurnResult.formFieldsThisTurn`
+  is `diffSlots(session.slots, touchedSlots)` — what's new-or-changed this
+  turn, computed once, not the same thing as `session.slots` vs.
+  `updatedSlots` (which would show nothing changed in that same scenario).
+- **Role-gated orchestrator-side**, in `index.ts`'s `computeFormFields()`
+  and `streamSession.ts`'s `handleFinalTranscript()` — the authoritative
+  check (every other authorization decision in this codebase,
+  `assertToolPermission`, already lives orchestrator-side too). A
+  `ROLE_DOCTOR` session never computes, sends, or audits a push at all.
+  `apps/gateway/src/relay.ts`'s `onFormAutofill()` re-checks `claims.role`
+  too, but only as cheap, redundant defense-in-depth, not the primary gate.
+- Sent at most once per turn: as a `formFields` field (`null` when nothing
+  changed) on the `/session/:id/turn` and `/session/:id/turn/audio` JSON
+  responses, and as a `turn.form_autofill` WS message (only sent at all when
+  there's something to send) on the real-time stream path — which the
+  gateway (`orchestratorStreamClient.ts` → `streamingTurnBackend.ts` →
+  `relay.ts`) relays onward as a real `UI_FORM_AUTOFILL` event to the
+  browser client. Every successful push is also audited as
+  `form_autofill_push` (`audit.ts`'s own doc comment already named this
+  action, aspirationally, before this pass).
+- **Known, accepted limitation**: a session resume/reconnect doesn't
+  re-send previously-pushed slot values — `SESSION_READY` carries no slot
+  data, so a client that reconnects mid-call only sees slot changes from
+  that point forward. Not built, since `apps/web-demo`'s reference form
+  isn't rendered yet either (`ReceptionistDashboard.tsx` receives
+  `onFormAutofill` but discards it) — write this down rather than
+  rediscover it whenever the real form gets built.
 
 ### 3.6 `packages/mcp-1hms` — client, tool schemas, and contract test all done
 

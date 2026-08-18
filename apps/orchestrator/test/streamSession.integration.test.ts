@@ -183,6 +183,92 @@ describe('orchestrator streaming STT route (GET /session/:id/stream)', () => {
     expect(c.binaryFrames.length).toBe(2); // one paired frame per chunk, in the same order
   });
 
+  it('sends turn.form_autofill with the new slot values once per turn, after a tool call establishes them', async () => {
+    const brain = mockGroqStream([
+      [
+        {
+          done: true,
+          toolCalls: [
+            {
+              id: 'call_1',
+              name: 'book_appointment',
+              arguments: { doctorId: 'd-1', patientName: 'Riya Sharma', patientMobile: '9999999999', preferredDate: '2026-08-20' },
+            },
+          ],
+        },
+      ],
+      [{ contentDelta: "Booked -- we'll confirm the exact time with you shortly.", done: false }, { done: true, toolCalls: undefined }],
+    ]);
+    const tts = mockTts(new Uint8Array([9, 9, 9]));
+    const hms = mockHms();
+    const sarvamRealtime = fakeSarvamRealtime({ finalTranscriptOnSpeechEnd: 'book Riya Sharma with Dr Patel on the 20th, mobile 9999999999' });
+
+    app = buildServer(new RedisMock(), {
+      brain,
+      stt: mockStt(),
+      tts,
+      hms,
+      streamingSttSessionFactory: () => sarvamRealtime,
+      connectionGate: fakeGate(),
+    });
+    await createSession(app);
+    await app.listen({ port: 0 });
+    const address = app.server.address();
+    if (typeof address !== 'object' || address === null) throw new Error('no server address');
+
+    ws = new WebSocket(`ws://127.0.0.1:${address.port}/session/sess-1/stream`);
+    ws.binaryType = 'nodebuffer';
+    const c = collector(ws);
+    await new Promise<void>((resolve, reject) => {
+      ws!.on('open', resolve);
+      ws!.on('error', reject);
+    });
+
+    await c.waitForEvent('stream.ready');
+    ws.send(JSON.stringify({ event: 'speech_start' }));
+    ws.send(JSON.stringify({ event: 'speech_end' }));
+
+    const autofill = await c.waitForEvent('turn.form_autofill');
+    expect(autofill).toEqual({
+      event: 'turn.form_autofill',
+      data: { doctorId: 'd-1', patientName: 'Riya Sharma', patientMobile: '9999999999', preferredDate: '2026-08-20' },
+    });
+  });
+
+  it('does not send turn.form_autofill when no slots changed this turn', async () => {
+    const brain = mockGroqStream([[{ contentDelta: 'Sure, one moment.', done: false }, { done: true, toolCalls: undefined }]]);
+    const tts = mockTts(new Uint8Array([9, 9, 9]));
+    const sarvamRealtime = fakeSarvamRealtime({ finalTranscriptOnSpeechEnd: 'is dr patel around' });
+
+    app = buildServer(new RedisMock(), {
+      brain,
+      stt: mockStt(),
+      tts,
+      hms: mockHms(),
+      streamingSttSessionFactory: () => sarvamRealtime,
+      connectionGate: fakeGate(),
+    });
+    await createSession(app);
+    await app.listen({ port: 0 });
+    const address = app.server.address();
+    if (typeof address !== 'object' || address === null) throw new Error('no server address');
+
+    ws = new WebSocket(`ws://127.0.0.1:${address.port}/session/sess-1/stream`);
+    ws.binaryType = 'nodebuffer';
+    const c = collector(ws);
+    await new Promise<void>((resolve, reject) => {
+      ws!.on('open', resolve);
+      ws!.on('error', reject);
+    });
+
+    await c.waitForEvent('stream.ready');
+    ws.send(JSON.stringify({ event: 'speech_start' }));
+    ws.send(JSON.stringify({ event: 'speech_end' }));
+
+    await c.waitForEvent('turn.reply');
+    expect(c.jsonMessages.find((m) => m.event === 'turn.form_autofill')).toBeUndefined();
+  });
+
   it('closes with 4004 when the session does not exist', async () => {
     app = buildServer(new RedisMock(), {
       brain: mockGroq([]),

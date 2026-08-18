@@ -3,10 +3,11 @@ import type { HybridRetriever } from '@vita/rag';
 import type { BrainProvider, ChatMessage, ToolCall } from './brain/types.js';
 import type { TtsProvider } from './tts/types.js';
 import { TOOL_SCHEMAS, executeTool, UnknownToolError } from './tools.js';
-import { ForbiddenError } from './rbac.js';
+import { assertToolPermission, ForbiddenError } from './rbac.js';
 import { recordAuditEvent } from './audit.js';
 import type { DialogueSession } from './session.js';
 import { splitCompletedSentences } from './sentenceSplitter.js';
+import { backfillArgsFromSlots, missingRequiredArgs, mergeSlots, clearBookingSlots, diffSlots } from './slots.js';
 
 const MAX_TOOL_ROUNDS = 3;
 
@@ -24,7 +25,9 @@ const SYSTEM_PROMPT =
   'insurance/billing basics). Always follow anything from search_hospital_reference with ' +
   'a brief spoken reminder to confirm exact details with hospital staff, since specifics ' +
   'can vary. Never invent patient, doctor, availability, or Vita-related information -- ' +
-  'only state what a tool call actually returned.';
+  'only state what a tool call actually returned. Never invent a value for a tool call\'s ' +
+  'argument either -- if you do not know a required value, ask the caller for it rather ' +
+  'than guessing.';
 
 function modelForRole(role: DialogueSession['role']): string {
   return role === 'ROLE_DOCTOR'
@@ -40,6 +43,21 @@ export interface RunTurnResult {
    * pipeline.ts deliberately never touches Redis/SessionStore directly, so it stays
    * testable with a plain in-memory session object. */
   updatedHistory: ChatMessage[];
+  /** Same persistence contract as updatedHistory above -- the caller persists this via
+   * SessionStore.update({ slots: ... }). Seeded from session.slots, then backfilled/merged
+   * across every tool call this turn (see slots.ts) -- this is what the NEXT turn's
+   * backfill reads from, so it reflects clearBookingSlots's post-booking reset. */
+  updatedSlots: Record<string, unknown>;
+  /** What's new-or-changed THIS turn, for a UI_FORM_AUTOFILL push -- deliberately NOT the
+   * same as diffSlots(session.slots, updatedSlots): a value that was set and then cleared
+   * within the SAME turn (e.g. a receptionist stating a patient's full booking in one
+   * breath, completing it immediately) would otherwise vanish from that diff entirely,
+   * even though the UI should still show it once. Computed from a separate high-water-mark
+   * accumulator that mirrors every slot merge but is never reset by clearBookingSlots --
+   * see the `touchedSlots` local below. Callers still own the ROLE_RECEPTIONIST gate (see
+   * index.ts's computeFormFields) -- this field is populated unconditionally regardless of
+   * role. */
+  formFieldsThisTurn: Record<string, unknown>;
   /** Streaming path only (see onReplyChunk below) -- set when a mid-turn TTS failure cut
    * the reply short. history/audio/replyText above still reflect exactly what was
    * actually said before the failure (never silently discarded), so the caller should
@@ -52,20 +70,72 @@ const MAX_TOOL_ROUNDS_FALLBACK_MESSAGE = "Sorry, I'm having trouble completing t
 /** Executes every tool call in `toolCalls` against `hms`/`faqRetriever`/
  * `hospitalReferenceRetriever`, RBAC-checked and audited, appending a role:'tool' history
  * entry per call -- shared by both the non-streaming and streaming paths below, which
- * otherwise differ significantly in how they get from history to a spoken reply. */
-async function runToolCalls(
-  toolCalls: ToolCall[],
-  session: DialogueSession,
-  hms: HmsClient,
-  faqRetriever: HybridRetriever | undefined,
-  hospitalReferenceRetriever: HybridRetriever | undefined,
-  history: ChatMessage[],
-  toolCallsExecuted: string[],
-): Promise<void> {
+ * otherwise differ significantly in how they get from history to a spoken reply.
+ *
+ * Also owns slot-tracking (see slots.ts): backfills a call's missing arguments from
+ * `slots` before dispatch, short-circuits (without ever calling executeTool/the real HMS
+ * API) if required arguments are still missing after backfill, and merges the
+ * (backfilled) arguments back into `slots` afterward -- `slots` is mutated in place,
+ * matching how `history` is mutated via .push() throughout this file.
+ *
+ * `touchedSlots` mirrors every merge into `slots` but is never reset by
+ * clearBookingSlots -- see RunTurnResult.formFieldsThisTurn's doc comment for why a
+ * separate, never-cleared accumulator is needed for the UI push. */
+async function runToolCalls(opts: {
+  toolCalls: ToolCall[];
+  session: DialogueSession;
+  hms: HmsClient;
+  faqRetriever: HybridRetriever | undefined;
+  hospitalReferenceRetriever: HybridRetriever | undefined;
+  history: ChatMessage[];
+  toolCallsExecuted: string[];
+  slots: Record<string, unknown>;
+  touchedSlots: Record<string, unknown>;
+}): Promise<void> {
+  const { toolCalls, session, hms, faqRetriever, hospitalReferenceRetriever, history, toolCallsExecuted, slots, touchedSlots } = opts;
+
   for (const call of toolCalls) {
     let resultText: string;
+    // Set once RBAC passes and backfill runs -- stays undefined for a ForbiddenError, so
+    // the catch block below can tell "never got past authorization" (no merge) apart from
+    // "authorized but the call itself failed" (still merge -- see that block's comment).
+    let filledArgs: Record<string, unknown> | undefined;
     try {
-      const toolResult = await executeTool(call.name, call.arguments, session.role, hms, faqRetriever, hospitalReferenceRetriever);
+      // Checked explicitly here, before backfill/validation, so authorization always wins
+      // -- executeTool below does this exact same check again internally (its own
+      // independently-tested contract), a deliberate, harmless redundancy needed only to
+      // control ordering relative to the missing-required-fields check, which lives
+      // outside executeTool.
+      assertToolPermission(call.name, session.role);
+
+      filledArgs = backfillArgsFromSlots(call.name, call.arguments, slots, TOOL_SCHEMAS);
+      const missing = missingRequiredArgs(call.name, filledArgs, TOOL_SCHEMAS);
+
+      if (missing.length > 0) {
+        // Short-circuits before ever calling executeTool/the real HMS API -- also closes a
+        // real, currently-silent backend bug: easyHMSAPI only validates doctorId/mobile
+        // server-side (Success:false with HTTP 200, not a thrown error), not
+        // patientName/preferredDate, so a missing preferredDate today silently proceeds
+        // with a zero-value date without this check.
+        recordAuditEvent({
+          ts: Date.now(),
+          sessionId: session.sessionId,
+          userId: session.userId,
+          role: session.role,
+          action: `tool_call:${call.name}`,
+          outcome: 'error',
+        });
+        resultText = JSON.stringify({
+          error: `Missing required field(s) for ${call.name}: ${missing.join(', ')}. Ask the caller for these before trying again.`,
+          missingFields: missing,
+        });
+        mergeSlots(slots, filledArgs); // whatever the user DID give this call is still worth keeping
+        mergeSlots(touchedSlots, filledArgs);
+        history.push({ role: 'tool', content: resultText, tool_call_id: call.id, name: call.name });
+        continue;
+      }
+
+      const toolResult = await executeTool(call.name, filledArgs, session.role, hms, faqRetriever, hospitalReferenceRetriever);
       recordAuditEvent({
         ts: Date.now(),
         sessionId: session.sessionId,
@@ -76,6 +146,18 @@ async function runToolCalls(
       });
       toolCallsExecuted.push(call.name);
       resultText = JSON.stringify(toolResult);
+      mergeSlots(slots, filledArgs);
+      mergeSlots(touchedSlots, filledArgs);
+      // A successful booking closes that patient's slot-fill -- without this, a second
+      // patient booked later in the same call could silently inherit the first patient's
+      // stale name/mobile/date/doctor via backfill (see clearBookingSlots's doc comment
+      // for the accepted, narrower residual risk this doesn't cover). Only `slots` is
+      // cleared, deliberately NOT `touchedSlots` -- the UI should still see the
+      // just-booked patient's details once, even though internal backfill state resets
+      // right after for the next booking.
+      if (call.name === 'book_appointment' && (toolResult as { success?: boolean } | null)?.success === true) {
+        clearBookingSlots(slots);
+      }
     } catch (err) {
       const outcome = err instanceof ForbiddenError ? 'denied' : 'error';
       recordAuditEvent({
@@ -89,6 +171,15 @@ async function runToolCalls(
       resultText = JSON.stringify({
         error: err instanceof ForbiddenError || err instanceof UnknownToolError ? err.message : 'Tool call failed',
       });
+      // Authorized but the dispatch itself failed (e.g. UnknownToolError, a transient HMS
+      // API error) -- the user's stated values are still real and worth keeping for a
+      // retry. filledArgs stays undefined for a ForbiddenError (thrown before backfill
+      // ever ran), so an unauthorized call's arguments never leak into future authorized
+      // calls' backfill.
+      if (filledArgs) {
+        mergeSlots(slots, filledArgs);
+        mergeSlots(touchedSlots, filledArgs);
+      }
     }
 
     history.push({
@@ -125,6 +216,11 @@ export async function runTurn(opts: {
   const { session, transcript, brain, tts, hms, faqRetriever, hospitalReferenceRetriever, onReplyChunk, isAborted } = opts;
   const model = modelForRole(session.role);
   const toolCallsExecuted: string[] = [];
+  // Seeded from whatever this session already knows; backfilled/merged in place across
+  // every tool call this turn (see slots.ts / runToolCalls above).
+  const slots: Record<string, unknown> = { ...(session.slots ?? {}) };
+  // High-water mark for the UI push -- see RunTurnResult.formFieldsThisTurn's doc comment.
+  const touchedSlots: Record<string, unknown> = { ...slots };
 
   const history: ChatMessage[] = session.history.length > 0
     ? [...session.history]
@@ -152,7 +248,7 @@ export async function runTurn(opts: {
         content: result.content ?? `[requested: ${result.toolCalls.map((t) => t.name).join(', ')}]`,
       });
 
-      await runToolCalls(result.toolCalls, session, hms, faqRetriever, hospitalReferenceRetriever, history, toolCallsExecuted);
+      await runToolCalls({ toolCalls: result.toolCalls, session, hms, faqRetriever, hospitalReferenceRetriever, history, toolCallsExecuted, slots, touchedSlots });
     }
 
     if (replyText === null) {
@@ -163,7 +259,14 @@ export async function runTurn(opts: {
     }
 
     const audio = await tts.synthesize(replyText);
-    return { replyText, audio, toolCallsExecuted, updatedHistory: history };
+    return {
+      replyText,
+      audio,
+      toolCallsExecuted,
+      updatedHistory: history,
+      updatedSlots: slots,
+      formFieldsThisTurn: diffSlots(session.slots, touchedSlots),
+    };
   }
 
   // --- Streaming path ---
@@ -255,7 +358,7 @@ export async function runTurn(opts: {
       role: 'assistant',
       content: content || `[requested: ${toolCalls.map((t) => t.name).join(', ')}]`,
     });
-    await runToolCalls(toolCalls, session, hms, faqRetriever, hospitalReferenceRetriever, history, toolCallsExecuted);
+    await runToolCalls({ toolCalls, session, hms, faqRetriever, hospitalReferenceRetriever, history, toolCallsExecuted, slots, touchedSlots });
 
     if (round === MAX_TOOL_ROUNDS - 1) {
       // Hit the cap without a final answer -- same fallback as the non-streaming path.
@@ -271,6 +374,8 @@ export async function runTurn(opts: {
     audio: Buffer.concat(spokenAudioChunks),
     toolCallsExecuted,
     updatedHistory: history,
+    updatedSlots: slots,
+    formFieldsThisTurn: diffSlots(session.slots, touchedSlots),
     error: ttsFailure,
   };
 }

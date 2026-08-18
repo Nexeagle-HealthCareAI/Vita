@@ -11,7 +11,7 @@ import {
   HOSPITAL_REFERENCE_DOCS,
   referenceEmbedText,
 } from '@vita/rag';
-import { SessionStore } from './session.js';
+import { SessionStore, type DialogueSession } from './session.js';
 import { assertToolPermission, ForbiddenError, type Role } from './rbac.js';
 import { recordAuditEvent, initAuditStore } from './audit.js';
 import { GroqBrainProvider } from './brain/groq.js';
@@ -20,7 +20,7 @@ import { SarvamSttProvider } from './stt/sarvam.js';
 import type { SttProvider, StreamingSttSession } from './stt/types.js';
 import { SarvamTtsProvider } from './tts/sarvam.js';
 import type { TtsProvider } from './tts/types.js';
-import { runTurn } from './pipeline.js';
+import { runTurn, type RunTurnResult } from './pipeline.js';
 import { StreamSessionHandler } from './streamSession.js';
 import { ConnectionOpenGate } from './connectionGate.js';
 import { SarvamRealtimeSttSession, buildSarvamRealtimeUrl } from './stt/sarvamRealtime.js';
@@ -287,12 +287,24 @@ export function buildServer(
     }
 
     const result = await runTurn({ session, transcript, brain, tts, hms, faqRetriever, hospitalReferenceRetriever });
-    await sessions.update(id, { history: result.updatedHistory, turnState: 'IDLE' });
+    const formFields = computeFormFields(session, result);
+    await sessions.update(id, { history: result.updatedHistory, slots: result.updatedSlots, turnState: 'IDLE' });
+    if (Object.keys(formFields).length > 0) {
+      recordAuditEvent({
+        ts: Date.now(),
+        sessionId: session.sessionId,
+        userId: session.userId,
+        role: session.role,
+        action: 'form_autofill_push',
+        outcome: 'success',
+      });
+    }
 
     return reply.send({
       replyText: result.replyText,
       audioBase64: Buffer.from(result.audio).toString('base64'),
       toolCallsExecuted: result.toolCallsExecuted,
+      formFields: Object.keys(formFields).length > 0 ? formFields : null,
     });
   });
 
@@ -337,7 +349,7 @@ export function buildServer(
         action: 'stt_empty',
         outcome: 'success',
       });
-      return reply.send({ transcript: '', replyText: null, audioBase64: null, toolCallsExecuted: [] });
+      return reply.send({ transcript: '', replyText: null, audioBase64: null, toolCallsExecuted: [], formFields: null });
     }
 
     let result;
@@ -355,13 +367,25 @@ export function buildServer(
       return reply.code(502).send({ error: { code: 'TURN_FAILED', message: errMessage(err), recoverable: true } });
     }
 
-    await sessions.update(id, { history: result.updatedHistory, turnState: 'IDLE' });
+    const formFields = computeFormFields(session, result);
+    await sessions.update(id, { history: result.updatedHistory, slots: result.updatedSlots, turnState: 'IDLE' });
+    if (Object.keys(formFields).length > 0) {
+      recordAuditEvent({
+        ts: Date.now(),
+        sessionId: session.sessionId,
+        userId: session.userId,
+        role: session.role,
+        action: 'form_autofill_push',
+        outcome: 'success',
+      });
+    }
 
     return reply.send({
       transcript,
       replyText: result.replyText,
       audioBase64: Buffer.from(result.audio).toString('base64'),
       toolCallsExecuted: result.toolCallsExecuted,
+      formFields: Object.keys(formFields).length > 0 ? formFields : null,
     });
   });
 
@@ -407,6 +431,19 @@ export function buildServer(
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** Which of this turn's slot changes (if any) are worth pushing to the client as
+ * UI_FORM_AUTOFILL -- role-gated HERE, orchestrator-side, as the authoritative check
+ * (every other authorization decision in this codebase, assertToolPermission, already
+ * lives orchestrator-side too). A ROLE_DOCTOR session never sends/audits a push at all --
+ * gating only downstream (the gateway's relay.ts, or web-sdk's client-side check) would
+ * mean an audit record claims a push happened that was silently dropped, and would ship
+ * PII-shaped data over the internal WS for no reason. (result.formFieldsThisTurn is
+ * pipeline.ts's own high-water-mark diff -- see RunTurnResult's doc comment for why it's
+ * not simply session.slots vs. result.updatedSlots.) */
+function computeFormFields(session: DialogueSession, result: RunTurnResult): Record<string, unknown> {
+  return session.role === 'ROLE_RECEPTIONIST' ? result.formFieldsThisTurn : {};
 }
 
 if (process.env.NODE_ENV !== 'test') {

@@ -40,7 +40,7 @@ describe('executeTool', () => {
 
   it('dispatches check_doctor_availability for both receptionist and doctor roles', async () => {
     const hms = mockHms();
-    await executeTool('check_doctor_availability', { doctorId: 'd-1', date: '2026-08-20' }, 'ROLE_DOCTOR', hms);
+    await executeTool('check_doctor_availability', { doctorId: 'd-1', preferredDate: '2026-08-20' }, 'ROLE_DOCTOR', hms);
     expect(hms.checkDoctorAvailability).toHaveBeenCalledWith({ doctorId: 'd-1', date: '2026-08-20' });
   });
 

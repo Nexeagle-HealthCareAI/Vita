@@ -71,9 +71,42 @@ describe('POST /session/:id/turn/audio', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body)).toEqual({ transcript: '', replyText: null, audioBase64: null, toolCallsExecuted: [] });
+    expect(JSON.parse(res.body)).toEqual({ transcript: '', replyText: null, audioBase64: null, toolCallsExecuted: [], formFields: null });
     expect(brain.chat).not.toHaveBeenCalled();
     expect(tts.synthesize).not.toHaveBeenCalled();
+  });
+
+  it('a tool call that establishes new slot values surfaces them as formFields -- powers UI_FORM_AUTOFILL', async () => {
+    const brain = mockGroq([
+      {
+        content: null,
+        toolCalls: [
+          { id: 'call_1', name: 'book_appointment', arguments: { doctorId: 'd-1', patientName: 'Riya Sharma', patientMobile: '9999999999', preferredDate: '2026-08-20' } },
+        ],
+      },
+      { content: "Booked -- we'll confirm the exact time with you shortly.", toolCalls: [] },
+    ]);
+    const stt = mockStt('Book Riya Sharma with Dr. Patel on the 20th, mobile 9999999999');
+    const tts = mockTts();
+    const hms = mockHms();
+    const app = buildServer(new RedisMock(), { brain, stt, tts, hms });
+    await createSession(app);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/session/sess-1/turn/audio',
+      payload: Buffer.from([1, 2, 3]),
+      headers: { 'content-type': 'application/octet-stream' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.formFields).toEqual({
+      doctorId: 'd-1',
+      patientName: 'Riya Sharma',
+      patientMobile: '9999999999',
+      preferredDate: '2026-08-20',
+    });
   });
 
   it('STT failure returns 502 STT_FAILED, recoverable', async () => {
