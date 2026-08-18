@@ -3,7 +3,14 @@ import websocketPlugin from '@fastify/websocket';
 import { Redis as IORedis, type Redis } from 'ioredis';
 import { QdrantClient } from '@qdrant/js-client-rest';
 import { HmsClient } from '@vita/mcp-1hms';
-import { HybridRetriever, LocalEmbedder, FAQ_DOCS, faqEmbedText } from '@vita/rag';
+import {
+  HybridRetriever,
+  LocalEmbedder,
+  FAQ_DOCS,
+  faqEmbedText,
+  HOSPITAL_REFERENCE_DOCS,
+  referenceEmbedText,
+} from '@vita/rag';
 import { SessionStore } from './session.js';
 import { assertToolPermission, ForbiddenError, type Role } from './rbac.js';
 import { recordAuditEvent, initAuditStore } from './audit.js';
@@ -29,6 +36,7 @@ export function buildServer(
     tts?: TtsProvider;
     hms?: HmsClient;
     faqRetriever?: HybridRetriever;
+    hospitalReferenceRetriever?: HybridRetriever;
     streamingSttSessionFactory?: () => StreamingSttSession;
     connectionGate?: ConnectionOpenGate;
   },
@@ -52,29 +60,45 @@ export function buildServer(
   const hms =
     clients?.hms ??
     new HmsClient(process.env.HMS_API_BASE_URL ?? 'http://localhost:5000', process.env.HMS_API_KEY ?? '');
-  // FAQ retrieval (search_vita_faq tool -- see tools.ts). Constructed synchronously and
-  // cheaply: QdrantClient's constructor doesn't connect eagerly, LocalEmbedder's model
-  // load is lazy (first real embed() call), and indexCorpus() over ~10 FAQ docs is
-  // in-memory BM25, no I/O -- so this needs no async ripple into buildServer() or the
-  // many existing tests that call it synchronously. Requires `pnpm --filter @vita/rag
-  // ingest` to have populated Qdrant's dense vectors at least once (see that package's
-  // README/ingest.ts) -- this constructor doesn't do that itself.
+  // FAQ + hospital-reference retrieval (search_vita_faq / search_hospital_reference tools
+  // -- see tools.ts). Constructed synchronously and cheaply: QdrantClient's constructor
+  // doesn't connect eagerly, LocalEmbedder's model load is lazy (first real embed()
+  // call), and indexCorpus() over a few dozen docs total is in-memory BM25, no I/O -- so
+  // this needs no async ripple into buildServer() or the many existing tests that call it
+  // synchronously. Requires `pnpm --filter @vita/rag ingest` to have populated Qdrant's
+  // dense vectors at least once (see that package's README/ingest.ts) -- this constructor
+  // doesn't do that itself.
+  //
+  // qdrant/embedder are shared across both retrievers below rather than one each -- a
+  // second QdrantClient is harmless, but a second LocalEmbedder would mean loading the
+  // same WASM model twice (its load is lazy but cached PER INSTANCE): doubled memory and
+  // a second cold-start latency spike, for zero benefit.
+  const qdrant = new QdrantClient({
+    url: process.env.QDRANT_URL ?? 'http://localhost:6333',
+    apiKey: process.env.QDRANT_API_KEY || undefined,
+    // No real Qdrant is reachable in most test/CI runs (this default is only ever
+    // actually hit in tests that don't override clients.faqRetriever/
+    // clients.hospitalReferenceRetriever) -- skips a background version-compatibility
+    // check that otherwise just console.warns.
+    checkCompatibility: false,
+  });
+  const embedder = new LocalEmbedder();
   const faqRetriever =
     clients?.faqRetriever ??
     (() => {
-      const r = new HybridRetriever(
-        new QdrantClient({
-          url: process.env.QDRANT_URL ?? 'http://localhost:6333',
-          apiKey: process.env.QDRANT_API_KEY || undefined,
-          // No real Qdrant is reachable in most test/CI runs (this default is only ever
-          // actually hit in tests that don't override clients.faqRetriever) -- skips a
-          // background version-compatibility check that otherwise just console.warns.
-          checkCompatibility: false,
-        }),
-        process.env.QDRANT_FAQ_COLLECTION ?? 'vita_faq',
-        new LocalEmbedder().embed,
-      );
+      const r = new HybridRetriever(qdrant, process.env.QDRANT_FAQ_COLLECTION ?? 'vita_faq', embedder.embed);
       r.indexCorpus(FAQ_DOCS.map((d) => ({ id: d.id, text: faqEmbedText(d) })));
+      return r;
+    })();
+  const hospitalReferenceRetriever =
+    clients?.hospitalReferenceRetriever ??
+    (() => {
+      const r = new HybridRetriever(
+        qdrant,
+        process.env.QDRANT_HOSPITAL_REFERENCE_COLLECTION ?? 'vita_hospital_reference',
+        embedder.embed,
+      );
+      r.indexCorpus(HOSPITAL_REFERENCE_DOCS.map((d) => ({ id: d.id, text: referenceEmbedText(d) })));
       return r;
     })();
   // Real-time streaming STT (apps/gateway/src/streamingTurnBackend.ts's counterpart) -- one
@@ -262,7 +286,7 @@ export function buildServer(
       return reply.code(400).send({ error: 'transcript is required' });
     }
 
-    const result = await runTurn({ session, transcript, brain, tts, hms, faqRetriever });
+    const result = await runTurn({ session, transcript, brain, tts, hms, faqRetriever, hospitalReferenceRetriever });
     await sessions.update(id, { history: result.updatedHistory, turnState: 'IDLE' });
 
     return reply.send({
@@ -318,7 +342,7 @@ export function buildServer(
 
     let result;
     try {
-      result = await runTurn({ session, transcript, brain, tts, hms, faqRetriever });
+      result = await runTurn({ session, transcript, brain, tts, hms, faqRetriever, hospitalReferenceRetriever });
     } catch (err) {
       recordAuditEvent({
         ts: Date.now(),
@@ -362,6 +386,7 @@ export function buildServer(
           tts,
           hms,
           faqRetriever,
+          hospitalReferenceRetriever,
           streamingSttSessionFactory,
           connectionGate,
           connectTimeoutMs: Number(process.env.SARVAM_CONNECT_TIMEOUT_MS ?? 1800),

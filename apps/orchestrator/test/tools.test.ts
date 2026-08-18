@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { HmsClient } from '@vita/mcp-1hms';
-import { FAQ_DOCS } from '@vita/rag';
+import { FAQ_DOCS, HOSPITAL_REFERENCE_DOCS } from '@vita/rag';
 import { executeTool, UnknownToolError } from '../src/tools.js';
 import { ForbiddenError } from '../src/rbac.js';
 import { mockRetriever } from './helpers.js';
@@ -88,5 +88,40 @@ describe('executeTool', () => {
   it('throws UnknownToolError for search_vita_faq when no retriever is supplied', async () => {
     const hms = mockHms();
     await expect(executeTool('search_vita_faq', { query: 'what is vita' }, 'ROLE_RECEPTIONIST', hms)).rejects.toThrow(UnknownToolError);
+  });
+
+  it('dispatches search_hospital_reference to the retriever and maps hits back to {title, body} pairs', async () => {
+    const hms = mockHms();
+    const doc = HOSPITAL_REFERENCE_DOCS[0]!;
+    const hospitalReferenceRetriever = mockRetriever([{ id: doc.id, text: 'irrelevant raw blob', score: 0.9 }]);
+
+    const result = await executeTool(
+      'search_hospital_reference',
+      { query: doc.title },
+      'ROLE_RECEPTIONIST',
+      hms,
+      undefined,
+      hospitalReferenceRetriever,
+    );
+
+    expect(hospitalReferenceRetriever.search).toHaveBeenCalledWith(doc.title, 3);
+    expect(result).toEqual([{ title: doc.title, body: doc.body }]);
+  });
+
+  it('allows both a receptionist and a doctor to call search_hospital_reference', async () => {
+    const hms = mockHms();
+    for (const role of ['ROLE_RECEPTIONIST', 'ROLE_DOCTOR'] as const) {
+      const hospitalReferenceRetriever = mockRetriever([]);
+      await expect(
+        executeTool('search_hospital_reference', { query: 'visiting hours' }, role, hms, undefined, hospitalReferenceRetriever),
+      ).resolves.toEqual([]);
+    }
+  });
+
+  it('throws UnknownToolError for search_hospital_reference when no retriever is supplied', async () => {
+    const hms = mockHms();
+    await expect(
+      executeTool('search_hospital_reference', { query: 'visiting hours' }, 'ROLE_RECEPTIONIST', hms),
+    ).rejects.toThrow(UnknownToolError);
   });
 });

@@ -31,4 +31,9 @@ describe('RBAC tool permissions', () => {
     expect(() => assertToolPermission('search_vita_faq', 'ROLE_RECEPTIONIST')).not.toThrow();
     expect(() => assertToolPermission('search_vita_faq', 'ROLE_DOCTOR')).not.toThrow();
   });
+
+  it('allows both a receptionist and a doctor to search hospital reference material', () => {
+    expect(() => assertToolPermission('search_hospital_reference', 'ROLE_RECEPTIONIST')).not.toThrow();
+    expect(() => assertToolPermission('search_hospital_reference', 'ROLE_DOCTOR')).not.toThrow();
+  });
 });

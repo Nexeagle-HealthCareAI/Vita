@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { FAQ_DOCS } from '@vita/rag';
+import { FAQ_DOCS, HOSPITAL_REFERENCE_DOCS } from '@vita/rag';
 import { runTurn } from '../src/pipeline.js';
 import { type ChatResult } from '../src/brain/types.js';
 import { mockGroq, mockTts, mockHms, mockRetriever, baseSession } from './helpers.js';
@@ -174,5 +174,25 @@ describe('runTurn — search_vita_faq (generic questions about Vita itself, not 
     expect(faqRetriever.search).toHaveBeenCalledWith(doc.question, 3);
     expect(result.replyText).toBe(doc.answer);
     expect(tts.synthesize).toHaveBeenCalledWith(doc.answer);
+  });
+});
+
+describe('runTurn — search_hospital_reference (clinical-prep/policy questions, not Vita or 1HMS data)', () => {
+  it('Groq requests the hospital-reference tool, gets a grounded answer, and phrases a reply from it', async () => {
+    const doc = HOSPITAL_REFERENCE_DOCS[0]!;
+    const brain = mockGroq([
+      { content: null, toolCalls: [{ id: 'call_1', name: 'search_hospital_reference', arguments: { query: doc.title } }] },
+      { content: `${doc.body}`, toolCalls: [] },
+    ]);
+    const tts = mockTts();
+    const hms = mockHms();
+    const hospitalReferenceRetriever = mockRetriever([{ id: doc.id, text: 'irrelevant raw blob', score: 0.9 }]);
+
+    const result = await runTurn({ session: baseSession(), transcript: doc.title, brain, tts, hms, hospitalReferenceRetriever });
+
+    expect(result.toolCallsExecuted).toEqual(['search_hospital_reference']);
+    expect(hospitalReferenceRetriever.search).toHaveBeenCalledWith(doc.title, 3);
+    expect(result.replyText).toBe(doc.body);
+    expect(tts.synthesize).toHaveBeenCalledWith(doc.body);
   });
 });

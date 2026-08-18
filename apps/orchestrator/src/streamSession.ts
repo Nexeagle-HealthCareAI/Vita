@@ -35,6 +35,7 @@ export interface StreamSessionDeps {
   tts: TtsProvider;
   hms: HmsClient;
   faqRetriever?: HybridRetriever;
+  hospitalReferenceRetriever?: HybridRetriever;
   streamingSttSessionFactory: () => StreamingSttSession;
   connectionGate: ConnectionOpenGate;
   connectTimeoutMs: number;
@@ -149,6 +150,7 @@ export class StreamSessionHandler {
         tts: this.deps.tts,
         hms: this.deps.hms,
         faqRetriever: this.deps.faqRetriever,
+        hospitalReferenceRetriever: this.deps.hospitalReferenceRetriever,
         // Sends each sentence's text+audio as soon as it's synthesized, instead of
         // waiting for the whole reply -- text message immediately followed by its own
         // binary audio frame, in that order, for every chunk including the last. That

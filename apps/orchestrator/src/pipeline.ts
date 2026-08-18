@@ -18,9 +18,13 @@ const SYSTEM_PROMPT =
   '-- there is no separate registration step). Bookings are non-binding requests; the ' +
   'exact time is confirmed by hospital staff afterward, so never tell a patient their ' +
   'time is final. Use search_vita_faq for generic questions about Vita itself (what it is, ' +
-  'what it can do, where it runs, etc.) rather than the hospital tools above. Never invent ' +
-  'patient, doctor, availability, or Vita-related information -- only state what a tool ' +
-  'call actually returned.';
+  'what it can do, where it runs, etc.) rather than the hospital tools above. Use ' +
+  'search_hospital_reference for clinical-prep and hospital-policy questions (fasting ' +
+  'rules, visiting hours, what to bring for admission, discharge process, ' +
+  'insurance/billing basics). Always follow anything from search_hospital_reference with ' +
+  'a brief spoken reminder to confirm exact details with hospital staff, since specifics ' +
+  'can vary. Never invent patient, doctor, availability, or Vita-related information -- ' +
+  'only state what a tool call actually returned.';
 
 function modelForRole(role: DialogueSession['role']): string {
   return role === 'ROLE_DOCTOR'
@@ -45,22 +49,23 @@ export interface RunTurnResult {
 
 const MAX_TOOL_ROUNDS_FALLBACK_MESSAGE = "Sorry, I'm having trouble completing that right now. Could you repeat what you need?";
 
-/** Executes every tool call in `toolCalls` against `hms`/`faqRetriever`, RBAC-checked and
- * audited, appending a role:'tool' history entry per call -- shared by both the
- * non-streaming and streaming paths below, which otherwise differ significantly in how
- * they get from history to a spoken reply. */
+/** Executes every tool call in `toolCalls` against `hms`/`faqRetriever`/
+ * `hospitalReferenceRetriever`, RBAC-checked and audited, appending a role:'tool' history
+ * entry per call -- shared by both the non-streaming and streaming paths below, which
+ * otherwise differ significantly in how they get from history to a spoken reply. */
 async function runToolCalls(
   toolCalls: ToolCall[],
   session: DialogueSession,
   hms: HmsClient,
   faqRetriever: HybridRetriever | undefined,
+  hospitalReferenceRetriever: HybridRetriever | undefined,
   history: ChatMessage[],
   toolCallsExecuted: string[],
 ): Promise<void> {
   for (const call of toolCalls) {
     let resultText: string;
     try {
-      const toolResult = await executeTool(call.name, call.arguments, session.role, hms, faqRetriever);
+      const toolResult = await executeTool(call.name, call.arguments, session.role, hms, faqRetriever, hospitalReferenceRetriever);
       recordAuditEvent({
         ts: Date.now(),
         sessionId: session.sessionId,
@@ -105,6 +110,8 @@ export async function runTurn(opts: {
   /** Optional so every existing caller/test keeps compiling unchanged -- see
    * executeTool's doc comment in tools.js for the same reasoning. */
   faqRetriever?: HybridRetriever;
+  /** Same reasoning as faqRetriever above -- powers search_hospital_reference. */
+  hospitalReferenceRetriever?: HybridRetriever;
   /** Optional -- when provided, streams the reply sentence-by-sentence via this callback
    * as each sentence is synthesized (the real-time WS path). Absent for every HTTP JSON
    * route, which keeps runTurn's behavior byte-for-byte identical to before streaming
@@ -115,7 +122,7 @@ export async function runTurn(opts: {
    * onReplyChunk is also provided. */
   isAborted?: () => boolean;
 }): Promise<RunTurnResult> {
-  const { session, transcript, brain, tts, hms, faqRetriever, onReplyChunk, isAborted } = opts;
+  const { session, transcript, brain, tts, hms, faqRetriever, hospitalReferenceRetriever, onReplyChunk, isAborted } = opts;
   const model = modelForRole(session.role);
   const toolCallsExecuted: string[] = [];
 
@@ -145,7 +152,7 @@ export async function runTurn(opts: {
         content: result.content ?? `[requested: ${result.toolCalls.map((t) => t.name).join(', ')}]`,
       });
 
-      await runToolCalls(result.toolCalls, session, hms, faqRetriever, history, toolCallsExecuted);
+      await runToolCalls(result.toolCalls, session, hms, faqRetriever, hospitalReferenceRetriever, history, toolCallsExecuted);
     }
 
     if (replyText === null) {
@@ -248,7 +255,7 @@ export async function runTurn(opts: {
       role: 'assistant',
       content: content || `[requested: ${toolCalls.map((t) => t.name).join(', ')}]`,
     });
-    await runToolCalls(toolCalls, session, hms, faqRetriever, history, toolCallsExecuted);
+    await runToolCalls(toolCalls, session, hms, faqRetriever, hospitalReferenceRetriever, history, toolCallsExecuted);
 
     if (round === MAX_TOOL_ROUNDS - 1) {
       // Hit the cap without a final answer -- same fallback as the non-streaming path.

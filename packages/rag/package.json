@@ -2,7 +2,7 @@
   "name": "@vita/rag",
   "version": "0.1.0",
   "private": true,
-  "description": "Hybrid (BM25 + dense) retrieval over Qdrant -- FAQ corpus about Vita today; lab-test rules/insurance docs are future work",
+  "description": "Hybrid (BM25 + dense) retrieval over Qdrant -- FAQ corpus about Vita, plus a sample hospital-reference corpus (clinical-prep/policy)",
   "type": "module",
   "main": "./dist/index.js",
   "scripts": {
@@ -11,6 +11,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest",
     "ingest": "tsx src/ingest.ts",
+    "eval": "tsx src/evalHospitalReference.ts",
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {

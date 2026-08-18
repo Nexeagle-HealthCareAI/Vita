@@ -264,41 +264,74 @@ file from `pnpm test`/CI's `node` job). Wired into CI as the
 plus `workflow_dispatch` only — never on a PR, since it depends on an
 external service being up and performs a real write.
 
-### 3.7 `packages/rag` — FAQ corpus live; lab-rules/insurance-doc corpus still TODO
+### 3.7 `packages/rag` — two live corpora (FAQ + hospital reference); real hospital content still TODO
 
 `HybridRetriever` (BM25 + Qdrant dense + reciprocal rank fusion) is implemented and
-tested (`packages/rag/test/bm25.test.ts`, `test/index.test.ts`), and is now wired
-into a real, if deliberately small, first use case: a hand-written FAQ corpus about
-Vita itself (`src/faqData.ts` -- what it is, what it can do, where it runs, etc.),
-retrievable mid-call via the `search_vita_faq` Groq tool
-(`apps/orchestrator/src/tools.ts`, wired through `pipeline.ts`'s `runTurn`).
+tested (`packages/rag/test/bm25.test.ts`, `test/index.test.ts`), and is wired into
+two separate corpora, each with its own Qdrant collection and Groq tool:
+
+- A hand-written FAQ corpus about Vita itself (`src/faqData.ts` -- what it is, what
+  it can do, where it runs, etc.), retrievable mid-call via the `search_vita_faq`
+  tool.
+- A ~14-doc hospital-reference corpus (`src/hospitalReferenceData.ts` -- clinical-prep
+  questions like fasting/MRI/colonoscopy prep, and hospital-policy questions like
+  visiting hours, admission documents, discharge process, insurance/billing basics),
+  retrievable via the `search_hospital_reference` tool. **Sample content**: no real,
+  hospital-verified policy or clinical-prep content exists anywhere in the EasyHMS
+  ecosystem today (no admin UI, no document store) -- these docs are hand-written,
+  clearly-labeled illustrative placeholders (see the file's SAMPLE-CONTENT NOTE),
+  written in deliberately hedged/general-guidance phrasing rather than absolute
+  clinical directives. Swapping in real hospital-specific content later needs no
+  pipeline changes. Because a caller could otherwise hear placeholder clinical-prep
+  text via TTS with no audible indication it's illustrative,
+  `apps/orchestrator/src/pipeline.ts`'s `SYSTEM_PROMPT` instructs the model to
+  always follow anything from this tool with a spoken reminder to confirm exact
+  details with hospital staff -- a second, prompt-level layer of the same
+  mitigation.
+
+Both tools are wired through `apps/orchestrator/src/tools.ts` and `pipeline.ts`'s
+`runTurn`, RBAC-allowed for both `ROLE_RECEPTIONIST` and `ROLE_DOCTOR`
+(`apps/orchestrator/src/rbac.ts`).
 
 - **Embeddings**: a local, in-process model (`src/embedder.ts`'s `LocalEmbedder`,
   `@huggingface/transformers`, `Xenova/all-MiniLM-L6-v2`, 384-dim) -- pure JS/WASM,
   no Python service, no API key, no per-call cost. Lazily loaded on first real
   `embed()` call; the load promise is cached so concurrent calls share one load.
-- **Ingestion**: `pnpm --filter @vita/rag ingest` (`src/ingest.ts`) creates the
-  `QDRANT_FAQ_COLLECTION` (default `vita_faq`) if missing and upserts each FAQ
-  doc's embedding. Idempotent -- each doc's `id` is a fixed literal UUID (Qdrant
-  only accepts unsigned ints or UUIDs as point ids, not arbitrary strings), so
-  re-running always upserts in place. Must be run at least once against a real
-  Qdrant (`docker compose up -d qdrant`) before `search_vita_faq` has anything to
-  find -- the orchestrator's own boot only rebuilds the cheap in-memory BM25 half
-  from the same `FAQ_DOCS`, it doesn't populate Qdrant.
+  `apps/orchestrator/src/index.ts`'s `buildServer()` constructs exactly ONE
+  `LocalEmbedder` and shares it across both retrievers -- since the load is cached
+  per instance, not sharing it would mean loading the same WASM model twice.
+- **Ingestion**: `pnpm --filter @vita/rag ingest` (`src/ingest.ts`) upserts both
+  corpora via a shared `ensureCollectionAndUpsert()` helper -- `FAQ_DOCS` into
+  `QDRANT_FAQ_COLLECTION` (default `vita_faq`), `HOSPITAL_REFERENCE_DOCS` into
+  `QDRANT_HOSPITAL_REFERENCE_COLLECTION` (default `vita_hospital_reference`).
+  Idempotent -- each doc's `id` is a fixed literal UUID (Qdrant only accepts
+  unsigned ints or UUIDs as point ids, not arbitrary strings), so re-running always
+  upserts in place. Must be run at least once against a real Qdrant (`docker
+  compose up -d qdrant`) before either tool has anything to find -- the
+  orchestrator's own boot only rebuilds the cheap in-memory BM25 half from the same
+  doc arrays, it doesn't populate Qdrant.
+- **Eval**: `pnpm --filter @vita/rag eval` (`src/evalHospitalReference.ts`) runs ~12
+  labeled `{query, expectedSlug}` pairs against the real retriever and reports
+  precision@5. Manual-only, like `ingest.ts` -- needs a real, already-ingested
+  Qdrant plus a real embedding-model load. **Deliberately not wired into
+  vitest/CI**: unlike `mcp-1hms-contract`'s nightly-CI pattern (which just calls an
+  already-running external service), automating this would need new CI
+  infrastructure (a Qdrant service container plus an ingest step) that doesn't
+  exist yet -- a named deferral, not an implicit omission.
 - **Testing**: `packages/rag/test/embedder.test.ts` is a genuine exception to this
   repo's fully-offline test convention -- it does a real (small, free, local) model
-  load + inference. `apps/orchestrator/test/pipeline.test.ts` covers the
-  Groq-requests-the-FAQ-tool round trip with a faked retriever.
+  load + inference. `packages/rag/test/hospitalReferenceData.test.ts` sanity-checks
+  the corpus itself (unique/valid UUIDs, unique slugs, non-empty fields).
+  `apps/orchestrator/test/pipeline.test.ts` covers both the
+  Groq-requests-the-FAQ-tool and Groq-requests-the-hospital-reference-tool round
+  trips with faked retrievers; `apps/orchestrator/test/tools.test.ts` covers
+  dispatch/RBAC/no-retriever-supplied for both tools.
 
-**Still not done** (unchanged from before this pass, explicitly future work, not
-silently dropped): the original lab-rules/insurance-doc corpus this section used to
-describe. To build that: pick a chunking strategy for real lab-test rules and
-insurance docs, embed and upsert them the same way `ingest.ts` does for FAQs (a
-second collection, not mixed into `vita_faq`), and add a small labeled eval set
-(10-20 realistic receptionist queries with known-correct doc IDs) scored on
-precision@5 -- retrieval-quality regressions on real documents are exactly what
-`BM25`/`HybridRetriever`'s unit tests can't catch, since those only prove the
-fusion math is correct, not that real embeddings retrieve the right real doc.
+**Still not done** (explicitly future work, not silently dropped): real,
+hospital-verified content to replace the sample hospital-reference docs, and
+per-hospital scoping (there's no tenant/`hospitalId` concept anywhere in the
+retrieval path or in `DialogueSession` upstream of it today -- retrieval stays
+global for both corpora until that's threaded through the whole chain).
 
 ### 3.8 `apps/web-demo` — reference implementation done
 

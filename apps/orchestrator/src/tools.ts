@@ -1,6 +1,6 @@
 import type { HmsClient } from '@vita/mcp-1hms';
 import type { HybridRetriever } from '@vita/rag';
-import { FAQ_DOCS } from '@vita/rag';
+import { FAQ_DOCS, HOSPITAL_REFERENCE_DOCS } from '@vita/rag';
 import { assertToolPermission, type Role } from './rbac.js';
 import type { ToolSchema } from './brain/types.js';
 
@@ -82,6 +82,21 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'search_hospital_reference',
+      description:
+        'Answer clinical-prep and hospital-policy questions -- e.g. fasting rules before a blood test, what to bring for admission, visiting hours, discharge process, insurance/billing basics. Not for questions about Vita itself (use search_vita_faq) and not for live doctor/patient/appointment data (use the other tools).',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'The question being asked, in plain language' },
+        },
+        required: ['query'],
+      },
+    },
+  },
 ];
 
 export class UnknownToolError extends Error {
@@ -97,11 +112,18 @@ export class UnknownToolError extends Error {
  * pipeline.ts catches and audits, same as the existing /session/:id/tool-call route
  * already does), then dispatches to the matching HmsClient method.
  *
- * `faqRetriever` is optional (unlike `hms`) so every existing caller/test keeps compiling
- * unchanged -- mirrors GroqBrainProvider's optional `apiUrl` param elsewhere in this codebase.
- * If search_vita_faq is requested with no retriever supplied, that's the same drift-guard
+ * `faqRetriever`/`hospitalReferenceRetriever` are optional (unlike `hms`) so every existing
+ * caller/test keeps compiling unchanged -- mirrors GroqBrainProvider's optional `apiUrl`
+ * param elsewhere in this codebase. If search_vita_faq/search_hospital_reference is
+ * requested with no matching retriever supplied, that's the same drift-guard
  * UnknownToolError the switch already throws for RBAC-allowed-but-unimplemented tools
  * (e.g. read_patient_emr).
+ *
+ * ACCEPTED TRADEOFF: faqRetriever/hospitalReferenceRetriever are two adjacent
+ * same-type optional positional params -- nothing stops them being swapped at a call
+ * site. There is exactly one production call site (pipeline.ts's runToolCalls), and a
+ * swap would fail the corresponding test's assertion immediately, so this isn't
+ * restructured into a named-args object for one call site.
  */
 export async function executeTool(
   name: string,
@@ -109,6 +131,7 @@ export async function executeTool(
   role: Role,
   hms: HmsClient,
   faqRetriever?: HybridRetriever,
+  hospitalReferenceRetriever?: HybridRetriever,
 ): Promise<unknown> {
   assertToolPermission(name, role);
 
@@ -139,6 +162,17 @@ export async function executeTool(
         .map((hit) => FAQ_DOCS.find((doc) => doc.id === hit.id))
         .filter((doc): doc is (typeof FAQ_DOCS)[number] => doc !== undefined)
         .map((doc) => ({ question: doc.question, answer: doc.answer }));
+    }
+    case 'search_hospital_reference': {
+      if (!hospitalReferenceRetriever) throw new UnknownToolError(name);
+      const { query } = args as { query: string };
+      const hits = await hospitalReferenceRetriever.search(query, 3);
+      // Same shaping principle as search_vita_faq above: return clean {title, body}
+      // pairs, not HybridSearchResult's raw indexed blob.
+      return hits
+        .map((hit) => HOSPITAL_REFERENCE_DOCS.find((doc) => doc.id === hit.id))
+        .filter((doc): doc is (typeof HOSPITAL_REFERENCE_DOCS)[number] => doc !== undefined)
+        .map((doc) => ({ title: doc.title, body: doc.body }));
     }
     default:
       throw new UnknownToolError(name);

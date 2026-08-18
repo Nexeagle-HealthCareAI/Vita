@@ -8,6 +8,7 @@ const TOOL_PERMISSIONS: Record<string, Role[]> = {
   read_patient_emr: ['ROLE_DOCTOR'],
   write_clinical_note: ['ROLE_DOCTOR'],
   search_vita_faq: ['ROLE_RECEPTIONIST', 'ROLE_DOCTOR'],
+  search_hospital_reference: ['ROLE_RECEPTIONIST', 'ROLE_DOCTOR'],
 };
 
 export class ForbiddenError extends Error {
