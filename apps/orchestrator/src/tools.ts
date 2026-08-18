@@ -1,7 +1,7 @@
 import type { HmsClient } from '@vita/mcp-1hms';
 import type { HybridRetriever } from '@vita/rag';
 import { FAQ_DOCS, HOSPITAL_REFERENCE_DOCS } from '@vita/rag';
-import { assertToolPermission, type Role } from './rbac.js';
+import { assertToolPermission, isToolAllowed, type Role } from './rbac.js';
 import type { ToolSchema } from './brain/types.js';
 
 /**
@@ -103,6 +103,16 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     },
   },
 ];
+
+/** Upfront RBAC: the tools actually offered to the model for `role`, so a disallowed
+ * tool (e.g. book_appointment for a doctor) is something the model structurally can't
+ * request, not just something it gets denied for after asking (assertToolPermission at
+ * dispatch time, in executeTool/pipeline.ts's runToolCalls, remains the real
+ * deny-by-default enforcement boundary -- this is an earlier, additive layer, not a
+ * replacement). Scales automatically as new tools are added to TOOL_SCHEMAS. */
+export function toolSchemasForRole(role: Role): ToolSchema[] {
+  return TOOL_SCHEMAS.filter((schema) => isToolAllowed(schema.function.name, role));
+}
 
 export class UnknownToolError extends Error {
   constructor(tool: string) {

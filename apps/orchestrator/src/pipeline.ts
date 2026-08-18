@@ -2,8 +2,8 @@ import type { HmsClient } from '@vita/mcp-1hms';
 import type { HybridRetriever } from '@vita/rag';
 import type { BrainProvider, ChatMessage, ToolCall } from './brain/types.js';
 import type { TtsProvider } from './tts/types.js';
-import { TOOL_SCHEMAS, executeTool, UnknownToolError } from './tools.js';
-import { assertToolPermission, ForbiddenError } from './rbac.js';
+import { TOOL_SCHEMAS, executeTool, toolSchemasForRole, UnknownToolError } from './tools.js';
+import { assertToolPermission, isToolAllowed, ForbiddenError, type Role } from './rbac.js';
 import { recordAuditEvent } from './audit.js';
 import type { DialogueSession } from './session.js';
 import { splitCompletedSentences } from './sentenceSplitter.js';
@@ -11,23 +11,39 @@ import { backfillArgsFromSlots, missingRequiredArgs, mergeSlots, clearBookingSlo
 
 const MAX_TOOL_ROUNDS = 3;
 
-const SYSTEM_PROMPT =
+const SHARED_INTRO =
   'You are Vita, a voice assistant helping hospital front-desk staff and doctors. ' +
   'Be concise -- your replies are spoken aloud. Use find_doctors to locate a doctor by ' +
   'specialty/name/city, check_doctor_availability to see if they are working on a given ' +
-  'date, and book_appointment to request an appointment (this also registers the patient ' +
-  '-- there is no separate registration step). Bookings are non-binding requests; the ' +
-  'exact time is confirmed by hospital staff afterward, so never tell a patient their ' +
-  'time is final. Use search_vita_faq for generic questions about Vita itself (what it is, ' +
+  'date. ';
+
+/** Only included for a role that's actually allowed to call book_appointment -- see
+ * buildSystemPrompt. Keeps the prompt itself upfront-RBAC-scoped, matching the tool list
+ * (toolSchemasForRole) sent alongside it: a role that can't book is never told it can. */
+const BOOKING_FRAGMENT =
+  'Use book_appointment to request an appointment (this also registers the patient -- ' +
+  'there is no separate registration step). Bookings are non-binding requests; the exact ' +
+  'time is confirmed by hospital staff afterward, so never tell a patient their time is ' +
+  'final. ';
+
+const SHARED_OUTRO =
+  'Use search_vita_faq for generic questions about Vita itself (what it is, ' +
   'what it can do, where it runs, etc.) rather than the hospital tools above. Use ' +
   'search_hospital_reference for clinical-prep and hospital-policy questions (fasting ' +
   'rules, visiting hours, what to bring for admission, discharge process, ' +
   'insurance/billing basics). Always follow anything from search_hospital_reference with ' +
   'a brief spoken reminder to confirm exact details with hospital staff, since specifics ' +
   'can vary. Never invent patient, doctor, availability, or Vita-related information -- ' +
-  'only state what a tool call actually returned. Never invent a value for a tool call\'s ' +
+  "only state what a tool call actually returned. Never invent a value for a tool call's " +
   'argument either -- if you do not know a required value, ask the caller for it rather ' +
   'than guessing.';
+
+/** Role-scoped system prompt -- upfront RBAC's other half (alongside toolSchemasForRole
+ * in tools.ts). Called once per session (see runTurn below: only seeded on a brand-new
+ * session, since session.role never changes for a session's lifetime). */
+function buildSystemPrompt(role: Role): string {
+  return SHARED_INTRO + (isToolAllowed('book_appointment', role) ? BOOKING_FRAGMENT : '') + SHARED_OUTRO;
+}
 
 function modelForRole(role: DialogueSession['role']): string {
   return role === 'ROLE_DOCTOR'
@@ -215,6 +231,10 @@ export async function runTurn(opts: {
 }): Promise<RunTurnResult> {
   const { session, transcript, brain, tts, hms, faqRetriever, hospitalReferenceRetriever, onReplyChunk, isAborted } = opts;
   const model = modelForRole(session.role);
+  // Upfront RBAC: the tool list offered to the model this turn never includes a tool
+  // this role can't call (see tools.ts's toolSchemasForRole) -- computed once, since
+  // session.role never changes for a session's lifetime.
+  const availableTools = toolSchemasForRole(session.role);
   const toolCallsExecuted: string[] = [];
   // Seeded from whatever this session already knows; backfilled/merged in place across
   // every tool call this turn (see slots.ts / runToolCalls above).
@@ -224,7 +244,7 @@ export async function runTurn(opts: {
 
   const history: ChatMessage[] = session.history.length > 0
     ? [...session.history]
-    : [{ role: 'system', content: SYSTEM_PROMPT }];
+    : [{ role: 'system', content: buildSystemPrompt(session.role) }];
   history.push({ role: 'user', content: transcript });
 
   if (!onReplyChunk) {
@@ -232,7 +252,7 @@ export async function runTurn(opts: {
     let replyText: string | null = null;
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      const result = await brain.chat(history, TOOL_SCHEMAS, model);
+      const result = await brain.chat(history, availableTools, model);
 
       if (result.toolCalls.length === 0) {
         replyText = result.content ?? '';
@@ -332,7 +352,7 @@ export async function runTurn(opts: {
     let sentenceBuffer = '';
     let toolCalls: ToolCall[] = [];
 
-    for await (const streamChunk of brain.chatStream(history, TOOL_SCHEMAS, model)) {
+    for await (const streamChunk of brain.chatStream(history, availableTools, model)) {
       if (streamChunk.contentDelta) {
         content += streamChunk.contentDelta;
         sentenceBuffer += streamChunk.contentDelta;

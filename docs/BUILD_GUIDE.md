@@ -317,6 +317,38 @@ this pass:
   `onFormAutofill` but discards it) — write this down rather than
   rediscover it whenever the real form gets built.
 
+#### 3.5.2 Upfront RBAC — done
+
+RBAC was previously enforced only at tool-dispatch time
+(`assertToolPermission`, throwing `ForbiddenError`, checked inside
+`executeTool` and, since §3.5.1's slot-tracking work, again explicitly in
+`pipeline.ts`'s `runToolCalls` before backfill/validation runs) — the full
+`TOOL_SCHEMAS` array was sent to Groq on every turn regardless of role, so
+a `ROLE_DOCTOR` session was offered `book_appointment` exactly like a
+receptionist and only got denied if it actually tried to call it.
+
+This is now additionally enforced upfront, on top of (not instead of) the
+existing dispatch-time check, which remains the real deny-by-default
+enforcement boundary:
+
+- `rbac.ts`'s `isToolAllowed(tool, role)` — a non-throwing counterpart to
+  `assertToolPermission`, sharing the same `TOOL_PERMISSIONS` map and the
+  same deny-by-default behavior for an unknown tool.
+- `tools.ts`'s `toolSchemasForRole(role)` filters `TOOL_SCHEMAS` down to
+  what that role may actually call, before it's ever sent to
+  `brain.chat()`/`brain.chatStream()` — computed once per turn in
+  `pipeline.ts`'s `runTurn()` (`session.role` never changes for a
+  session's lifetime, so this never needs recomputing mid-turn).
+- `pipeline.ts`'s `SYSTEM_PROMPT` (now `buildSystemPrompt(role)`) is
+  similarly role-scoped — a doctor's prompt never mentions
+  `book_appointment` at all, keeping the prompt consistent with the tool
+  list actually offered alongside it.
+
+Today's practical effect is narrow (every tool except `book_appointment`
+is already allowed for both roles) but the mechanism scales automatically:
+a future doctor-only tool with a real schema and `executeTool` case is
+filtered/described correctly with no changes needed here.
+
 ### 3.6 `packages/mcp-1hms` — client, tool schemas, and contract test all done
 
 `HmsClient` and the three MCP tools (`find_doctors`, `check_doctor_availability`,

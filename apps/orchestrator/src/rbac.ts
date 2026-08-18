@@ -24,8 +24,15 @@ export class ForbiddenError extends Error {
  * JWT, never from a client-controlled field on the request itself.
  */
 export function assertToolPermission(tool: string, role: Role): void {
-  const allowed = TOOL_PERMISSIONS[tool];
-  if (!allowed || !allowed.includes(role)) {
+  if (!isToolAllowed(tool, role)) {
     throw new ForbiddenError(tool, role);
   }
+}
+
+/** Non-throwing counterpart to assertToolPermission -- lets a caller FILTER (e.g.
+ * tools.ts's toolSchemasForRole, pipeline.ts's buildSystemPrompt) rather than reject.
+ * Same deny-by-default semantics: an unknown tool name is never allowed. */
+export function isToolAllowed(tool: string, role: Role): boolean {
+  const allowed = TOOL_PERMISSIONS[tool];
+  return !!allowed && allowed.includes(role);
 }

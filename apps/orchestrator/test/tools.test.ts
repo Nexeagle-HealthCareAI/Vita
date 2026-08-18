@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { HmsClient } from '@vita/mcp-1hms';
 import { FAQ_DOCS, HOSPITAL_REFERENCE_DOCS } from '@vita/rag';
-import { executeTool, UnknownToolError } from '../src/tools.js';
+import { executeTool, toolSchemasForRole, UnknownToolError } from '../src/tools.js';
 import { ForbiddenError } from '../src/rbac.js';
 import { mockRetriever } from './helpers.js';
 
@@ -12,6 +12,29 @@ function mockHms() {
   client.bookAppointment = vi.fn().mockResolvedValue({ success: true, message: null, appointmentId: 'a-1', patientId: 'p-1', isReminderSent: true });
   return client;
 }
+
+describe('toolSchemasForRole (upfront RBAC -- what gets offered to the model)', () => {
+  it('excludes book_appointment for ROLE_DOCTOR but includes everything else', () => {
+    const names = toolSchemasForRole('ROLE_DOCTOR').map((s) => s.function.name);
+    expect(names).not.toContain('book_appointment');
+    expect(names).toEqual(
+      expect.arrayContaining(['find_doctors', 'check_doctor_availability', 'search_vita_faq', 'search_hospital_reference']),
+    );
+  });
+
+  it('includes every tool, including book_appointment, for ROLE_RECEPTIONIST', () => {
+    const names = toolSchemasForRole('ROLE_RECEPTIONIST').map((s) => s.function.name);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'find_doctors',
+        'check_doctor_availability',
+        'book_appointment',
+        'search_vita_faq',
+        'search_hospital_reference',
+      ]),
+    );
+  });
+});
 
 describe('executeTool', () => {
   it('denies a forbidden role before ever calling HmsClient', async () => {

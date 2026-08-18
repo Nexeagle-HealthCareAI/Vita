@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ForbiddenError, assertToolPermission } from '../src/rbac.js';
+import { ForbiddenError, assertToolPermission, isToolAllowed } from '../src/rbac.js';
 
 describe('RBAC tool permissions', () => {
   it('allows both a receptionist and a doctor to find doctors', () => {
@@ -35,5 +35,21 @@ describe('RBAC tool permissions', () => {
   it('allows both a receptionist and a doctor to search hospital reference material', () => {
     expect(() => assertToolPermission('search_hospital_reference', 'ROLE_RECEPTIONIST')).not.toThrow();
     expect(() => assertToolPermission('search_hospital_reference', 'ROLE_DOCTOR')).not.toThrow();
+  });
+});
+
+describe('isToolAllowed (non-throwing counterpart, used for upfront filtering)', () => {
+  it('mirrors assertToolPermission for a shared tool -- true for both roles', () => {
+    expect(isToolAllowed('find_doctors', 'ROLE_RECEPTIONIST')).toBe(true);
+    expect(isToolAllowed('find_doctors', 'ROLE_DOCTOR')).toBe(true);
+  });
+
+  it('mirrors assertToolPermission for a receptionist-only tool', () => {
+    expect(isToolAllowed('book_appointment', 'ROLE_RECEPTIONIST')).toBe(true);
+    expect(isToolAllowed('book_appointment', 'ROLE_DOCTOR')).toBe(false);
+  });
+
+  it('is deny-by-default for an unknown tool', () => {
+    expect(isToolAllowed('delete_all_patients', 'ROLE_DOCTOR')).toBe(false);
   });
 });

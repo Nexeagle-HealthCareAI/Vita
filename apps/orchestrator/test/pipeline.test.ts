@@ -136,6 +136,29 @@ describe('runTurn — scripted conversation (golden-fixture style, per docs/BUIL
     delete process.env.GROQ_MODEL_DOCTOR;
     delete process.env.GROQ_MODEL_ADMIN;
   });
+
+  it('upfront RBAC: a doctor session is never even offered book_appointment; a receptionist session is', async () => {
+    const brain = mockGroq([{ content: 'ok', toolCalls: [] }]);
+    await runTurn({ session: baseSession({ role: 'ROLE_DOCTOR' }), transcript: 'hi', brain, tts: mockTts(), hms: mockHms() });
+    const doctorTools = (brain.chat as ReturnType<typeof vi.fn>).mock.calls[0][1] as { function: { name: string } }[];
+    expect(doctorTools.map((t) => t.function.name)).not.toContain('book_appointment');
+
+    const brain2 = mockGroq([{ content: 'ok', toolCalls: [] }]);
+    await runTurn({ session: baseSession({ role: 'ROLE_RECEPTIONIST' }), transcript: 'hi', brain: brain2, tts: mockTts(), hms: mockHms() });
+    const receptionistTools = (brain2.chat as ReturnType<typeof vi.fn>).mock.calls[0][1] as { function: { name: string } }[];
+    expect(receptionistTools.map((t) => t.function.name)).toContain('book_appointment');
+  });
+
+  it("upfront RBAC: a doctor session's system prompt never mentions book_appointment; a receptionist session's does", async () => {
+    const brain = mockGroq([{ content: 'ok', toolCalls: [] }]);
+    const result = await runTurn({ session: baseSession({ role: 'ROLE_DOCTOR' }), transcript: 'hi', brain, tts: mockTts(), hms: mockHms() });
+    expect(result.updatedHistory[0]).toEqual(expect.objectContaining({ role: 'system' }));
+    expect((result.updatedHistory[0]!.content as string)).not.toContain('book_appointment');
+
+    const brain2 = mockGroq([{ content: 'ok', toolCalls: [] }]);
+    const result2 = await runTurn({ session: baseSession({ role: 'ROLE_RECEPTIONIST' }), transcript: 'hi', brain: brain2, tts: mockTts(), hms: mockHms() });
+    expect(result2.updatedHistory[0]!.content).toContain('book_appointment');
+  });
 });
 
 describe('runTurn — round cap (a live call must never hang)', () => {
