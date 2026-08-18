@@ -349,6 +349,43 @@ is already allowed for both roles) but the mechanism scales automatically:
 a future doctor-only tool with a real schema and `executeTool` case is
 filtered/described correctly with no changes needed here.
 
+#### 3.5.3 Phonetic normalization for TTS — done
+
+The last item from `docs/ARCHITECTURE.md`'s topology diagram, which named
+this explicitly (*"Sarvam TTS, phonetic normalizer ('Dr.' -> 'Doctor',
+'10:30 AM' -> ...)"*) but never built it — `SarvamTtsProvider.synthesize()`
+passed whatever text it was given straight through with zero
+preprocessing. `packages/mcp-1hms/src/hmsClient.ts` returns shift/
+appointment times as `"HH:MM:SS"` (.NET `TimeSpan`'s default JSON format)
+and dates as `"YYYY-MM-DD"` — raw formats that could reach a spoken reply
+verbatim if the LLM echoed a tool result instead of paraphrasing it.
+
+`apps/orchestrator/src/phoneticNormalizer.ts`'s `normalizePhonetics(text)`
+is a small, pure text transform (mirroring `sentenceSplitter.ts`'s own
+scope discipline and doc-comment style) handling exactly three patterns:
+honorifics (`Dr.`/`Mr.`/`Mrs.`/`Ms.` → their spoken-out form),
+`HH:MM(:SS)?` 24-hour times → spoken 12-hour form (guarded against
+double-converting an already-natural `"2:30 PM"`), and `YYYY-MM-DD` dates →
+a spoken month/day/year form. Deliberately **not** in scope: acronyms like
+`MRI`/`OPD`/`NPO` (these already read correctly as spelled-out letters) and
+reformatting tool-call *results* before the LLM sees them (a different,
+tool-shaping concern).
+
+`pipeline.ts`'s `runTurn()` applies it at exactly the three points text is
+handed to `tts.synthesize()` (the non-streaming path's one call, and the
+streaming path's `enqueueSentence`/`flushFinal`) — and nowhere else.
+`replyText`/`spokenText`/history/the `REPLY_TEXT`/`turn.reply` events a
+client displays all stay exactly what the LLM said; only the audio actually
+synthesized changes. This is deliberate: normalization exists to fix how
+something *sounds*, not to rewrite a written transcript (a chat bubble
+reading "Doctor Patel" instead of "Dr. Patel" would look wrong).
+
+This closes the last item from the original Lead-Architect orchestrator gap
+analysis (state/turn sync → slot-tracking + `UI_FORM_AUTOFILL`, RBAC →
+upfront filtering, model routing/streaming → already real + shipped, tool
+execution/RAG → hospital-reference corpus, audit logging → already
+accurate, phonetic normalization → this).
+
 ### 3.6 `packages/mcp-1hms` — client, tool schemas, and contract test all done
 
 `HmsClient` and the three MCP tools (`find_doctors`, `check_doctor_availability`,

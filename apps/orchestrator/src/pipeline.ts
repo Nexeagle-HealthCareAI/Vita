@@ -8,6 +8,7 @@ import { recordAuditEvent } from './audit.js';
 import type { DialogueSession } from './session.js';
 import { splitCompletedSentences } from './sentenceSplitter.js';
 import { backfillArgsFromSlots, missingRequiredArgs, mergeSlots, clearBookingSlots, diffSlots } from './slots.js';
+import { normalizePhonetics } from './phoneticNormalizer.js';
 
 const MAX_TOOL_ROUNDS = 3;
 
@@ -278,7 +279,10 @@ export async function runTurn(opts: {
       history.push({ role: 'assistant', content: replyText });
     }
 
-    const audio = await tts.synthesize(replyText);
+    // normalizePhonetics is applied only to what's actually spoken -- replyText (returned
+    // below, and already pushed into history above) stays exactly what the LLM said, so
+    // the transcript/history are never rewritten, only the synthesized audio changes.
+    const audio = await tts.synthesize(normalizePhonetics(replyText));
     return {
       replyText,
       audio,
@@ -314,7 +318,9 @@ export async function runTurn(opts: {
   async function enqueueSentence(sentence: string): Promise<boolean> {
     if (pendingSentence !== null) {
       try {
-        const audio = await tts.synthesize(pendingSentence);
+        // Same spoken-vs-displayed split as the non-streaming path above: only the TTS
+        // input is normalized -- spokenText/emitChunk's `text` stay the LLM's own words.
+        const audio = await tts.synthesize(normalizePhonetics(pendingSentence));
         spokenText += pendingSentence;
         spokenAudioChunks.push(audio);
         emitChunk({ text: pendingSentence, audio, isFinal: false });
@@ -334,7 +340,7 @@ export async function runTurn(opts: {
     let audio: Uint8Array = new Uint8Array(0);
     if (text && !ttsFailure) {
       try {
-        audio = await tts.synthesize(text);
+        audio = await tts.synthesize(normalizePhonetics(text));
         spokenText += text;
         spokenAudioChunks.push(audio);
       } catch (err) {

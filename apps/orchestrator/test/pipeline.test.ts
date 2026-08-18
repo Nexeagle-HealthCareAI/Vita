@@ -29,7 +29,9 @@ describe('runTurn — scripted conversation (golden-fixture style, per docs/BUIL
     expect(result.replyText).toBe('Dr. Patel is in from 9 to 1 that day.');
     expect(Array.from(result.audio)).toEqual([1, 2, 3]);
     expect(hms.checkDoctorAvailability).toHaveBeenCalledWith({ doctorId: 'd-1', date: '2026-08-20' });
-    expect(tts.synthesize).toHaveBeenCalledWith('Dr. Patel is in from 9 to 1 that day.');
+    // Phonetic normalization applies only to what's spoken -- replyText/history above
+    // stay the LLM's original "Dr." wording; only the TTS input is normalized.
+    expect(tts.synthesize).toHaveBeenCalledWith('Doctor Patel is in from 9 to 1 that day.');
 
     const auditLines = auditSpy.mock.calls.map((c) => JSON.parse(c[0] as string));
     expect(auditLines).toContainEqual(
@@ -242,6 +244,22 @@ describe('runTurn — slot-tracking across turns', () => {
     auditSpy.mockRestore();
 
     expect(result.replyText).toContain('mobile');
+  });
+});
+
+describe('runTurn — phonetic normalization (spoken audio vs. displayed/logged text)', () => {
+  it('synthesizes normalized text but returns/records the original, unnormalized text', async () => {
+    const brain = mockGroq([{ content: 'Dr. Patel is free at 14:30:00 on 2026-08-20.', toolCalls: [] }]);
+    const tts = mockTts();
+    const hms = mockHms();
+
+    const result = await runTurn({ session: baseSession(), transcript: 'when is dr patel free', brain, tts, hms });
+
+    expect(tts.synthesize).toHaveBeenCalledWith('Doctor Patel is free at 2:30 PM on August 20, 2026.');
+    // replyText (returned to the caller, and what's already in history) stays exactly
+    // what the LLM said -- only the synthesized audio input changes.
+    expect(result.replyText).toBe('Dr. Patel is free at 14:30:00 on 2026-08-20.');
+    expect(result.updatedHistory.at(-1)).toEqual({ role: 'assistant', content: 'Dr. Patel is free at 14:30:00 on 2026-08-20.' });
   });
 });
 
