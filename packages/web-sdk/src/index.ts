@@ -1,6 +1,7 @@
 import { BinaryFrameType, decodeBinaryFrame, encodeBinaryFrame } from '@vita/protocol';
 import type { ServerControlEvent } from '@vita/protocol';
 import { JitterBufferPlayer } from './playback.js';
+import { computeRmsLevel } from './audioLevel.js';
 
 export type TeraState = 'IDLE' | 'LISTENING' | 'PROCESSING' | 'SPEAKING' | 'ERROR';
 
@@ -34,6 +35,13 @@ export interface TeraConfig {
    * frame that carries that same piece's spoken audio. */
   onReplyText?: (text: string, isFinal: boolean) => void;
   onFormAutofill?: (fields: PatientFormFields) => void;
+  /** Local-only amplitude meter for the outgoing microphone audio, fired ~50/sec
+   * (once per 20ms frame), roughly 0-1 -- purely for UI feedback (e.g. a bouncing
+   * mic-level indicator). Never sent to the server, and has ZERO influence on
+   * turn-taking/barge-in -- those remain entirely the server's Silero VAD's job (see
+   * apps/audio-preprocess), which stays the single source of truth. See
+   * audioLevel.ts's computeRmsLevel for what's actually computed. */
+  onAudioLevel?: (level: number) => void;
   onStateChange?: (state: TeraState) => void;
   onError?: (error: { code: string; message: string; recoverable: boolean }) => void;
   /** Fires on every SESSION_READY (i.e. every successful connect, fresh or resumed) with
@@ -244,13 +252,14 @@ export class TeraWebSDK {
     const pcmWorker = new AudioWorkletNode(this.audioContext, 'tera-pcm-processor');
 
     pcmWorker.port.onmessage = (event) => {
+      const buffer = event.data as ArrayBuffer;
       if (this.ws?.readyState === WebSocket.OPEN) {
-        const frame = encodeBinaryFrame(
-          BinaryFrameType.AUDIO_INPUT_PCM16,
-          new Uint8Array(event.data as ArrayBuffer),
-        );
-        this.ws.send(frame);
+        this.ws.send(encodeBinaryFrame(BinaryFrameType.AUDIO_INPUT_PCM16, new Uint8Array(buffer)));
       }
+      // Purely local UI feedback, computed from the same frame already sent above --
+      // this can never gate whether/when audio is sent, since it only runs after that
+      // decision has already been made (see onAudioLevel's doc comment on TeraConfig).
+      this.config.onAudioLevel?.(computeRmsLevel(new Int16Array(buffer)));
     };
     source.connect(pcmWorker);
   }

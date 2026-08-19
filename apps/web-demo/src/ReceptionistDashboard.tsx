@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { VitaWebSDK, type PatientFormFields, type VitaState } from '@vita/web-sdk';
 import './ReceptionistDashboard.css';
 
@@ -19,6 +19,10 @@ export function ReceptionistDashboard() {
     patientMobile: '',
     specialtyCategory: '',
   });
+  // Local-only, purely cosmetic -- drives the orb's glow while LISTENING (see the JSX
+  // below). Zero influence on turn-taking/barge-in, which stay entirely server-driven
+  // (see @vita/web-sdk's onAudioLevel doc comment).
+  const [micLevel, setMicLevel] = useState(0);
   const [lastError, setLastError] = useState<string | null>(null);
   const [sdk, setSdk] = useState<VitaWebSDK | null>(null);
   const [hasConsented, setHasConsented] = useState(false);
@@ -69,6 +73,7 @@ export function ReceptionistDashboard() {
           return updated;
         }),
       onFormAutofill: (fields) => setFormData((prev) => ({ ...prev, ...fields })),
+      onAudioLevel: setMicLevel,
       onStateChange: (s) => setState(s),
       onError: (e) => setLastError(`${e.code}: ${e.message}`),
     });
@@ -111,7 +116,12 @@ export function ReceptionistDashboard() {
       )}
 
       <main className="stage__main">
-        <div className={`orb-wrap orb-wrap--${orbState}`}>
+        <div
+          className={`orb-wrap orb-wrap--${orbState}`}
+          // Purely cosmetic -- only reflects mic input while actually LISTENING, never
+          // while SPEAKING/PROCESSING/IDLE, and never influences anything but this glow.
+          style={{ '--mic-level': state === 'LISTENING' ? micLevel : 0 } as CSSProperties}
+        >
           <div className="ring ring--1" />
           <div className="ring ring--2" />
           <div className="orb" />

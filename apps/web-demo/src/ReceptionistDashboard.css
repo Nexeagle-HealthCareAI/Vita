@@ -127,6 +127,11 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Live mic-level glow, driven by the SDK's local-only onAudioLevel callback (see
+     ReceptionistDashboard.tsx) -- --mic-level is 0 outside LISTENING, so this rule is a
+     no-op everywhere else. Layered on the wrapper's own filter, not .orb's transform, so
+     it never fights the orb-pulse-listen keyframe animation below. */
+  filter: drop-shadow(0 0 calc(var(--mic-level, 0) * 30px) rgba(74, 158, 255, 0.6));
 }
 
 .orb {
