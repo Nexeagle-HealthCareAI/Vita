@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { PROTOCOL_VERSION } from '@vita/protocol';
 import { AudioPreprocessClient } from '../src/audioPreprocessClient.js';
 import { OrchestratorClient, type TurnAudioResponse } from '../src/orchestratorClient.js';
 import { ConnectionRelay, type RelayConfig } from '../src/relay.js';
@@ -772,6 +773,117 @@ describe('ConnectionRelay', () => {
       expect(orchestrator.resumeSession).toHaveBeenCalledWith('sess-1', 'stale-tok', CLAIMS.sub);
       expect(orchestrator.createSession).toHaveBeenCalledTimes(1);
       expect(jsonSends(sent)[0]).toEqual(SESSION_READY); // resumed: false
+    });
+  });
+
+  describe('protocol-version enforcement (protocolVersionEnforcementEnabled)', () => {
+    it('no HELLO before helloTimeoutMs sends ERROR and closes via deps.close(4003, ...) directly -- never through the full close() teardown', async () => {
+      const audioPreprocess = fakeAudioPreprocess();
+      const orchestrator = fakeOrchestrator();
+      const backendFactory = fakeBackendFactory(orchestrator);
+      const closeSpy = vi.fn();
+      const sent: (string | Uint8Array)[] = [];
+      const relay = new ConnectionRelay(
+        { audioPreprocess, orchestrator, backendFactory, claims: CLAIMS, send: (d) => sent.push(d), close: closeSpy },
+        { protocolVersionEnforcementEnabled: true, helloTimeoutMs: 3000 },
+      );
+      await relay.start();
+
+      await vi.advanceTimersByTimeAsync(3000);
+
+      expect(closeSpy).toHaveBeenCalledWith(4003, 'unsupported protocol version');
+      expect(jsonSends(sent)).toContainEqual({
+        event: 'ERROR',
+        code: 'UNSUPPORTED_PROTOCOL_VERSION',
+        message: expect.any(String),
+        recoverable: false,
+      });
+      // Locks in the leak fix: this path must go through deps.close directly, never
+      // ConnectionRelay's own close() -- proven by sessionId staying set (close() would
+      // null it) and neither audioPreprocess.teardown nor backend.close() firing.
+      expect(relay.sessionId).toBe('sess-1');
+      expect(audioPreprocess.teardown).not.toHaveBeenCalled();
+      expect(vi.mocked(backendFactory.backends[0].close)).not.toHaveBeenCalled();
+    });
+
+    it('a valid HELLO before the timeout suppresses the close entirely', async () => {
+      const audioPreprocess = fakeAudioPreprocess();
+      const orchestrator = fakeOrchestrator();
+      const closeSpy = vi.fn();
+      const relay = new ConnectionRelay(
+        { audioPreprocess, orchestrator, backendFactory: fakeBackendFactory(orchestrator), claims: CLAIMS, send: () => {}, close: closeSpy },
+        { protocolVersionEnforcementEnabled: true, helloTimeoutMs: 3000 },
+      );
+      await relay.start();
+
+      relay.handleControlEvent(JSON.stringify({ event: 'HELLO', version: PROTOCOL_VERSION, role: 'ROLE_RECEPTIONIST' }));
+      await vi.advanceTimersByTimeAsync(3000);
+
+      expect(closeSpy).not.toHaveBeenCalled();
+    });
+
+    it('an invalid/wrong-version HELLO does not suppress the timeout', async () => {
+      const audioPreprocess = fakeAudioPreprocess();
+      const orchestrator = fakeOrchestrator();
+      const closeSpy = vi.fn();
+      const relay = new ConnectionRelay(
+        { audioPreprocess, orchestrator, backendFactory: fakeBackendFactory(orchestrator), claims: CLAIMS, send: () => {}, close: closeSpy },
+        { protocolVersionEnforcementEnabled: true, helloTimeoutMs: 3000 },
+      );
+      await relay.start();
+
+      relay.handleControlEvent(JSON.stringify({ event: 'HELLO', version: PROTOCOL_VERSION + 1, role: 'ROLE_RECEPTIONIST' }));
+      relay.handleControlEvent('not even json');
+      await vi.advanceTimersByTimeAsync(3000);
+
+      expect(closeSpy).toHaveBeenCalledWith(4003, 'unsupported protocol version');
+    });
+
+    it('a non-recoverable backend error that nulls sessionId before the timer fires suppresses the redundant ERROR/close', async () => {
+      const orchestrator = fakeOrchestrator({ ok: false, error: { code: 'SESSION_NOT_FOUND', message: 'gone', recoverable: false } });
+      const audioPreprocess = fakeAudioPreprocess();
+      (audioPreprocess.process as ReturnType<typeof vi.fn>).mockResolvedValue({ frame: frame(1), speechDetected: true });
+      const closeSpy = vi.fn();
+      const sent: (string | Uint8Array)[] = [];
+      const relay = new ConnectionRelay(
+        {
+          audioPreprocess,
+          orchestrator,
+          backendFactory: fakeBackendFactory(orchestrator),
+          claims: CLAIMS,
+          send: (d) => sent.push(d),
+          close: closeSpy,
+        },
+        { protocolVersionEnforcementEnabled: true, helloTimeoutMs: 3000, minUtteranceSpeechMs: 20, maxUtteranceMs: 20 },
+      );
+      await relay.start();
+
+      await sendFrame(relay, frame(1)); // arms
+      await sendFrame(relay, frame(2)); // force-flushes -> the (failing, non-recoverable) turn -- nulls sessionId
+
+      const sentLengthAfterBackendError = sent.length;
+      await vi.advanceTimersByTimeAsync(3000);
+
+      expect(closeSpy).not.toHaveBeenCalled(); // no redundant close from the hello-timer path
+      expect(sent.length).toBe(sentLengthAfterBackendError); // no second ERROR appended
+    });
+
+    it('at the default (protocolVersionEnforcementEnabled: false), no timer is ever armed regardless of whether HELLO arrives', async () => {
+      const audioPreprocess = fakeAudioPreprocess();
+      const orchestrator = fakeOrchestrator();
+      const closeSpy = vi.fn();
+      const relay = new ConnectionRelay({
+        audioPreprocess,
+        orchestrator,
+        backendFactory: fakeBackendFactory(orchestrator),
+        claims: CLAIMS,
+        send: () => {},
+        close: closeSpy,
+      }); // no config override -- DEFAULT_RELAY_CONFIG.protocolVersionEnforcementEnabled === false
+      await relay.start();
+
+      await vi.advanceTimersByTimeAsync(60_000); // well past any realistic helloTimeoutMs
+      expect(closeSpy).not.toHaveBeenCalled();
     });
   });
 });

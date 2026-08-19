@@ -2,11 +2,15 @@ import { z } from 'zod';
 
 /**
  * PROTOCOL_VERSION bumps whenever an event shape changes in a
- * backward-incompatible way. Gateway and orchestrator reject any
- * client whose `hello.version` is behind the minimum supported version.
- * This is what makes the Phase 2 mobile SDK's "zero backend changes"
- * claim actually true — mobile just has to speak the same versioned
- * contract, not something inferred from the web client's code.
+ * backward-incompatible way. The gateway (apps/gateway/src/relay.ts) rejects any
+ * client whose `hello.version` doesn't match, behind PROTOCOL_VERSION_ENFORCEMENT_ENABLED
+ * -- ships dark until validated, same rollout posture as STREAMING_STT_ENABLED. The
+ * orchestrator never sees a raw client message at all (only the gateway terminates the
+ * client WS; the orchestrator only talks to the gateway's own internal HTTP/WS clients),
+ * so it plays no role in this check, despite an earlier version of this comment claiming
+ * otherwise. This is what's meant to make the Phase 2 mobile SDK's "zero backend
+ * changes" claim actually true — mobile just has to speak the same versioned contract,
+ * not something inferred from the web client's code.
  */
 export const PROTOCOL_VERSION = 1;
 

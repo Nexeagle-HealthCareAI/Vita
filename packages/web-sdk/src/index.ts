@@ -1,4 +1,4 @@
-import { BinaryFrameType, decodeBinaryFrame, encodeBinaryFrame } from '@vita/protocol';
+import { BinaryFrameType, decodeBinaryFrame, encodeBinaryFrame, PROTOCOL_VERSION } from '@vita/protocol';
 import type { ServerControlEvent } from '@vita/protocol';
 import { JitterBufferPlayer } from './playback.js';
 import { computeRmsLevel } from './audioLevel.js';
@@ -136,6 +136,12 @@ export class TeraWebSDK {
 
     this.ws.onopen = async () => {
       this.reconnectAttempt = 0;
+      // Sent unconditionally, regardless of whether the gateway's
+      // PROTOCOL_VERSION_ENFORCEMENT_ENABLED kill-switch is on -- so flipping enforcement
+      // on later needs no coordinated client redeploy. Synchronous, before the mic-permission
+      // dependent initAudioCapture() below, to give the gateway's grace-period timer the best
+      // realistic chance of seeing this before any audio frame (not a strict guarantee).
+      this.ws!.send(JSON.stringify({ event: 'HELLO', version: PROTOCOL_VERSION, role: this.config.userRole }));
       this.setState('LISTENING');
       try {
         await this.initAudioCapture();
@@ -155,6 +161,18 @@ export class TeraWebSDK {
       this.teardownAudio();
       if (this.userInitiatedStop || this.torn_down) {
         this.setState('IDLE');
+        return;
+      }
+      if (event.code === 4003) {
+        // Gateway rejected this connection for missing/unsupported protocol version
+        // (PROTOCOL_VERSION_ENFORCEMENT_ENABLED) -- retrying with the same client build
+        // will deterministically fail again, so don't scheduleReconnect() into a loop.
+        this.setState('ERROR');
+        this.emitError(
+          'UNSUPPORTED_PROTOCOL_VERSION',
+          new Error('gateway rejected this connection: unsupported protocol version'),
+          /* recoverable */ false,
+        );
         return;
       }
       // Unexpected close (network drop, auth expiry) — reconnect with backoff

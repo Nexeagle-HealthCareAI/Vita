@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { BinaryFrameType, encodeBinaryFrame, type ServerControlEvent } from '@vita/protocol';
+import { BinaryFrameType, encodeBinaryFrame, ClientControlEvent, type ServerControlEvent } from '@vita/protocol';
 import type { AudioPreprocessClient } from './audioPreprocessClient.js';
 import type { OrchestratorClient, RelayError } from './orchestratorClient.js';
 import type { ResumeIntent, SessionClaims } from './ticket.js';
@@ -16,6 +16,17 @@ export interface RelayConfig {
   outboundChunkBytes: number;
   bargeInEnabled: boolean;
   bargeInGraceMs: number;
+  /** How long to wait for a valid HELLO before rejecting the connection -- only
+   * enforced when protocolVersionEnforcementEnabled is true. HELLO is sent
+   * synchronously in the client's ws.onopen (no getUserMedia/mic-permission
+   * dependency), so this is generous headroom, not a tight budget. */
+  helloTimeoutMs: number;
+  /** Ships dark (default false), same rollout posture as STREAMING_STT_ENABLED --
+   * this feature's blast radius spans protocol+gateway+web-sdk, and its failure mode
+   * for an unaccounted-for client (a permanent reconnect-loop, since an old client's
+   * onclose handler predates the 4003 special-case) is worse than e.g.
+   * SESSION_RESUME_ENABLED's, so it needs the more conservative default. */
+  protocolVersionEnforcementEnabled: boolean;
 }
 
 export const DEFAULT_RELAY_CONFIG: RelayConfig = {
@@ -27,6 +38,8 @@ export const DEFAULT_RELAY_CONFIG: RelayConfig = {
   outboundChunkBytes: 3200,
   bargeInEnabled: true,
   bargeInGraceMs: 300,
+  helloTimeoutMs: 3000,
+  protocolVersionEnforcementEnabled: false,
 };
 
 export interface RelayLogger {
@@ -50,8 +63,14 @@ export interface RelayDeps {
    * this to close the real WS socket, so RelaySessionRegistry.evict() can fully retire a
    * stale connection on resume -- close() itself never touched the socket before this,
    * so without it an evicted connection's relay state would die but the socket would stay
-   * open forever. */
-  close?: () => void;
+   * open forever.
+   *
+   * code/reason are optional and default (in index.ts's wiring) to the historical
+   * 4009/"session resumed on a new connection" close -- every existing no-args caller
+   * (this file's own close(), RelaySessionRegistry.evict()) keeps that exact behavior
+   * unchanged. A caller with a genuinely different reason (e.g. the hello-timeout below)
+   * passes its own code/reason through instead. */
+  close?: (code?: number, reason?: string) => void;
   log?: RelayLogger;
 }
 
@@ -86,6 +105,10 @@ export class ConnectionRelay {
 
   private bargeInArmed = false;
   private bargeInTimer: ReturnType<typeof setTimeout> | undefined;
+
+  // -- Protocol-version enforcement (ships dark, see RelayConfig.protocolVersionEnforcementEnabled) --
+  private helloReceived = false;
+  private helloTimer: ReturnType<typeof setTimeout> | undefined;
 
   // -- Multi-chunk speak() bookkeeping (streaming replies) --
   /** Bumped once per turn, in startEndOfUtterance() -- the authoritative "a new turn's
@@ -161,6 +184,30 @@ export class ConnectionRelay {
       resumeToken: established.resumeToken,
       resumed: established.resumed,
     });
+
+    if (this.config.protocolVersionEnforcementEnabled) {
+      this.helloTimer = setTimeout(() => {
+        // !this._sessionId: an unrelated non-recoverable backend error (onBackendError)
+        // may already have killed this connection during the grace window -- don't pile
+        // a second, unrelated fatal error onto an already-dead session.
+        if (this.helloReceived || !this._sessionId) return;
+        this.sendJson({
+          event: 'ERROR',
+          code: 'UNSUPPORTED_PROTOCOL_VERSION',
+          message: 'no valid HELLO received within the grace period (missing or unsupported protocol version)',
+          recoverable: false,
+        });
+        // deps.close directly, NOT this.close() -- this.close() nulls _sessionId before
+        // the socket's real 'close' event fires, which would make index.ts's
+        // socket.on('close', ...) handler (the only place that unregisters a session
+        // from RelaySessionRegistry) find sessionId already null and silently skip
+        // unregistering -- an unbounded leak on every rejection. Let that existing
+        // handler do teardown/unregistration exactly like it does for every other close
+        // reason; this call's only job is severing the raw transport with the right code.
+        this.deps.close?.(4003, 'unsupported protocol version');
+      }, this.config.helloTimeoutMs);
+    }
+
     return true;
   }
 
@@ -171,14 +218,33 @@ export class ConnectionRelay {
   }
 
   handleControlEvent(raw: string): void {
-    // HELLO is the only client control event the protocol defines, and it's advisory-only
-    // (role comes from the JWT, already resolved before ConnectionRelay exists) -- nothing
-    // to act on beyond observability.
+    // HELLO is the only client control event the protocol defines. Its `role` field is
+    // still advisory-only (role comes from the JWT, already resolved before
+    // ConnectionRelay exists) -- the only thing acted on here is `version`, for the
+    // ships-dark protocol-version enforcement above. ClientControlEvent's version field
+    // is a z.literal(PROTOCOL_VERSION), so a wrong-version HELLO and a malformed message
+    // are treated identically (parse failure) -- no separate distinction needed, same as
+    // how "invalid or expired ticket" doesn't distinguish its own sub-cases either; the
+    // raw string is still logged below regardless of parse outcome.
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = undefined;
+    }
+    if (parsed !== undefined && ClientControlEvent.safeParse(parsed).success) {
+      this.helloReceived = true;
+      if (this.helloTimer) {
+        clearTimeout(this.helloTimer);
+        this.helloTimer = undefined;
+      }
+    }
     this.deps.log?.debug({ msg: raw }, 'relay: control event received');
   }
 
   close(): void {
     if (this.bargeInTimer) clearTimeout(this.bargeInTimer);
+    if (this.helloTimer) clearTimeout(this.helloTimer);
     if (this._sessionId) {
       // Fire-and-forget, same pattern as start()'s call below -- frees this session's
       // model state in audio-preprocess promptly rather than waiting out its TTL

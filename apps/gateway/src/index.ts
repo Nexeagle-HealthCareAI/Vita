@@ -43,6 +43,10 @@ function relayConfigFromEnv(): Partial<RelayConfig> {
   if (process.env.MAX_UTTERANCE_MS) config.maxUtteranceMs = Number(process.env.MAX_UTTERANCE_MS);
   if (process.env.BARGE_IN_ENABLED) config.bargeInEnabled = process.env.BARGE_IN_ENABLED !== 'false';
   if (process.env.BARGE_IN_GRACE_MS) config.bargeInGraceMs = Number(process.env.BARGE_IN_GRACE_MS);
+  if (process.env.HELLO_TIMEOUT_MS) config.helloTimeoutMs = Number(process.env.HELLO_TIMEOUT_MS);
+  if (process.env.PROTOCOL_VERSION_ENFORCEMENT_ENABLED) {
+    config.protocolVersionEnforcementEnabled = process.env.PROTOCOL_VERSION_ENFORCEMENT_ENABLED === 'true';
+  }
   return config;
 }
 
@@ -156,7 +160,7 @@ export function buildServer(deps?: {
           claims,
           consentGiven,
           send: (data) => socket.send(data),
-          close: () => socket.close(4009, 'session resumed on a new connection'),
+          close: (code, reason) => socket.close(code ?? 4009, reason ?? 'session resumed on a new connection'),
           log: req.log,
         },
         relayConfig,

@@ -177,6 +177,30 @@ streaming real (TTS-synthesized) PCM to confirm the gateway holds up under a
 full reception desk's worth of simultaneous calls — see
 `tools/load-test/README.md`.
 
+#### 3.3.1 Protocol-version enforcement — done, ships dark
+
+`packages/protocol/src/events.ts`'s `PROTOCOL_VERSION`/`HelloEvent` existed
+in the shared zod contract with no enforcement behind it — any client, on
+any version, was accepted silently. `relay.ts` now arms a `helloTimeoutMs`
+(default 3000ms) grace-period timer on `start()`; if no valid `HELLO`
+(`ClientControlEvent`, matched via zod's `safeParse`) arrives in time, it
+sends a non-recoverable `UNSUPPORTED_PROTOCOL_VERSION` error and closes with
+WS code `4003` — via `deps.close?.(code, reason)` directly, never through
+`ConnectionRelay.close()`, so `index.ts`'s existing `socket.on('close', ...)`
+handler remains the sole place a session is unregistered from
+`RelaySessionRegistry` (routing this through the full `close()` instead would
+null `_sessionId` before that handler ever sees it, silently leaking every
+rejected connection's registry entry). `@vita/web-sdk` now sends `HELLO` with
+the current `PROTOCOL_VERSION` synchronously in `ws.onopen`, and treats a
+`4003` close as non-recoverable rather than reconnecting into a loop.
+
+Gated behind `PROTOCOL_VERSION_ENFORCEMENT_ENABLED` (default `false`) — ships
+dark, same rollout posture as `STREAMING_STT_ENABLED`: this feature's blast
+radius spans protocol/gateway/web-sdk, and its failure mode for an
+unaccounted-for client (a permanent reconnect loop, since an old client build
+predates the `4003` special-case) is worse than e.g. `SESSION_RESUME_ENABLED`'s,
+so it needs the more conservative default.
+
 ### 3.4 `apps/audio-preprocess` — real models wired in; hospital-specific tuning still open
 
 Real Silero VAD (`torch.hub.load('snakers4/silero-vad', 'silero_vad')`,

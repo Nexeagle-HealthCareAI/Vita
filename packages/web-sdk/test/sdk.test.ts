@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PROTOCOL_VERSION } from '@vita/protocol';
 import { TeraWebSDK } from '../src/index.js';
 
 /** Minimal fake standing in for the browser WebSocket -- only the surface TeraWebSDK
@@ -207,5 +208,55 @@ describe('TeraWebSDK — REPLY_TEXT (the assistant reply, as text)', () => {
     ws.onmessage?.({ data: JSON.stringify({ event: 'REPLY_TEXT', text: 'Let me check that.', final: false }) });
 
     expect(onReplyText).toHaveBeenCalledWith('Let me check that.', false);
+  });
+});
+
+describe('TeraWebSDK — protocol-version HELLO / code 4003 handling', () => {
+  const baseConfig = {
+    gatewayOrigin: 'https://gateway.vita.hospital',
+    authToken: 'test-jwt',
+    userRole: 'ROLE_RECEPTIONIST' as const,
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    FakeWebSocket.instances = [];
+    // @ts-expect-error -- test double, not a spec-complete WebSocket
+    global.WebSocket = FakeWebSocket;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it('sends HELLO with the current PROTOCOL_VERSION as the first thing on open, before mic-permission-dependent audio capture', async () => {
+    global.fetch = fetchOkWithTicket();
+    const sdk = new TeraWebSDK(baseConfig);
+
+    await sdk.startSession(true);
+    const ws = FakeWebSocket.instances[0];
+    await ws.onopen?.();
+
+    expect(ws.send).toHaveBeenCalledWith(JSON.stringify({ event: 'HELLO', version: PROTOCOL_VERSION, role: 'ROLE_RECEPTIONIST' }));
+  });
+
+  it('a close with code 4003 emits a non-recoverable UNSUPPORTED_PROTOCOL_VERSION error and never reconnects', async () => {
+    global.fetch = fetchOkWithTicket();
+    const onError = vi.fn();
+    const sdk = new TeraWebSDK({ ...baseConfig, onError });
+
+    await sdk.startSession(true);
+    const ws = FakeWebSocket.instances[0];
+    ws.onclose?.({ code: 4003 });
+
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ code: 'UNSUPPORTED_PROTOCOL_VERSION', recoverable: false }));
+
+    // No reconnect loop -- retrying with the same client build would deterministically
+    // fail again. Confirm no new WebSocket is constructed even after the full backoff
+    // window (MAX_RECONNECT_DELAY_MS=15s in index.ts) elapses.
+    const instancesAtClose = FakeWebSocket.instances.length;
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(FakeWebSocket.instances.length).toBe(instancesAtClose);
   });
 });
