@@ -177,25 +177,23 @@ streaming real (TTS-synthesized) PCM to confirm the gateway holds up under a
 full reception desk's worth of simultaneous calls — see
 `tools/load-test/README.md`.
 
-### 3.4 `apps/audio-preprocess` — stub models, wire real weights
+### 3.4 `apps/audio-preprocess` — real models wired in; hospital-specific tuning still open
 
-`app/vad.py` and `app/denoise.py` currently pass through audio unchanged
-(the fallback path) so the service is independently testable
-(`apps/audio-preprocess/tests/`, already passing) without needing ~100MB+ of
-model weights in every CI run. To go live:
+Real Silero VAD (`torch.hub.load('snakers4/silero-vad', 'silero_vad')`,
+`app/vad.py`) and DeepFilterNet3 (`init_df()`, `app/denoise.py`) are wired
+in as the actual runtime default, not a future "to go live" step — `app/
+main.py`'s `lifespan()` loads both real models at startup, and the
+`Dockerfile` bakes model loading into the image build itself (a failed
+load fails the build, not just a runtime degrade). `_process_sync()` runs
+denoise, then VAD on the denoised output, on every real incoming frame.
 
-```python
-# app/vad.py — SileroVAD.load()
-import torch
-self._model, utils = torch.hub.load('snakers4/silero-vad', 'silero_vad')
-
-# app/denoise.py — Denoiser.load()
-from df import init_df
-self._model, self.df_state, _ = init_df()
-```
-
-Keep the pass-through fallback as the default when models aren't loaded —
-it's what makes the unit tests fast and deterministic. A **separate**
+The pass-through/energy-threshold fallback in `app/vad.py`/`app/denoise.py`
+only activates in two cases: a real model load genuinely failing at
+startup (a production degrade path, not the default), and the fast,
+default unit test suite (`apps/audio-preprocess/tests/test_main.py`),
+which deliberately constructs `Denoiser()`/`SileroVAD()` without calling
+`.load()` so it stays fast/deterministic without needing ~100MB+ of model
+weights in every CI run. A **separate**
 integration test suite (`tests/test_models_integration.py` and
 `tests/test_real_audio_fixtures.py`, both marked `@pytest.mark.slow` and
 excluded from the default CI job, runnable on demand via the
@@ -208,6 +206,16 @@ recordings exist or are used — the fixtures in `tests/fixtures/` are
 TTS-synthesized speech (Windows SAPI, `generate_fixtures.ps1`) with
 synthetic pink noise mixed in at controlled SNRs (`mix_snr.py`), an honest
 stand-in for real reception audio, not a claim of being real recordings.
+
+**Still open, and not a code gap**: "hospital-specific" denoising is
+aspirational framing, not implemented tuning. `init_df()` is called with
+zero arguments (`app/denoise.py`) -- this is the stock, publicly-released
+DeepFilterNet3 checkpoint, the same one anyone would get for any use case,
+not a model fine-tuned on real hospital/reception audio (PA announcements,
+HVAC, adjacent conversations). No real hospital recordings exist anywhere
+in this repo to tune against, deliberately (see the fixture-provenance
+note above) -- closing this gap needs real hospital audio data first,
+which is a data-collection problem, not an implementation one.
 
 ### 3.5 `apps/orchestrator` — session/RBAC/audit done; wire the pipeline
 
@@ -225,8 +233,13 @@ is a stub past the RBAC/audit gate — wire in:
    `packages/rag` retrieval.
 3. TTS: Sarvam TTS on the final response text, chunked and pushed as binary
    `AUDIO_OUTPUT_PCM16` frames.
-4. On VAD-detected barge-in from `apps/audio-preprocess`, emit
-   `CLEAR_PLAYBACK` immediately — don't wait for the LLM turn to finish.
+4. ~~On VAD-detected barge-in, emit `CLEAR_PLAYBACK` immediately~~ — not an
+   orchestrator responsibility. This is entirely `apps/gateway/src/relay.ts`'s
+   job (`processSpeakingFrame()`/`triggerBargeIn()`, already done, gated by
+   `bargeInGraceMs`/`minUtteranceSpeechMs` debouncing) — the orchestrator's
+   only barge-in involvement is `abortActiveTurn()` telling `runTurn()` to
+   stop generating further reply chunks once the gateway has already decided
+   to interrupt.
 
 **Testing**: for each stage, unit-test against a mocked HTTP client (same
 pattern as `packages/mcp-1hms/test/hmsClient.test.ts` — inject `fetch`).

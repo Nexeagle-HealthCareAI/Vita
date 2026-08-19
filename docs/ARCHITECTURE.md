@@ -13,7 +13,7 @@ Changes from v1.0 are marked **[NEW]** / **[CHANGED]**.
 |  |                        WEB SDK (@vita/web-sdk)                             ||
 |  |  - Audio Capture: AudioWorkletNode (16kHz 16-bit PCM Mono)                 ||
 |  |  - AEC: browser-native (getUserMedia echoCancellation) — SINGLE AEC [CHANGED]||
-|  |  - Client VAD: Silero VAD — advisory only, drives barge-in UX [CHANGED]    ||
+|  |  - Client Audio Meter: local RMS level, UI-only, no barge-in [CHANGED]     ||
 |  |  - Playback: scheduled jitter-buffer queue (AudioBufferSourceNode chain)   ||
 |  |  - Protocol: binary WS frames + typed events from @vita/protocol [NEW]     ||
 |  |  - Session: ticket-based auth, auto-reconnect w/ backoff [NEW]             ||
@@ -28,13 +28,13 @@ Changes from v1.0 are marked **[NEW]** / **[CHANGED]**.
 |  - Role is re-derived from JWT claims server-side, never trusted from client   |
 |  - Binary frame passthrough, sticky session routing, connection draining [NEW] |
 |  - Frame Resampling & Transcoding                                              |
+|  - relay.ts: emits CLEAR_PLAYBACK on VAD-detected barge-in [CHANGED]           |
 +--------------------------------------------------------------------------------+
               v
 +--------------------------------------------------------------------------------+
 |                       AUDIO PRE-PROCESSING ENGINE                              |
-|  - DeepFilterNet (neural noise filtering for hospital/clinic ambient noise)    |
-|  - Silero VAD — authoritative turn-taking signal                              |
-|  - Interruption Handler: emits CLEAR_PLAYBACK event on barge-in [CHANGED]      |
+|  - DeepFilterNet (pretrained, hospital-tuning not yet done)                    |
+|  - Silero VAD -- authoritative turn-taking signal                              |
 +--------------------------------------------------------------------------------+
               v
 +--------------------------------------------------------------------------------+
@@ -79,7 +79,7 @@ Changes from v1.0 are marked **[NEW]** / **[CHANGED]**.
 | 3 | `@vita/protocol` shared, versioned event contract | Prevents client/server drift, required before Phase 2 mobile SDK can truly be "zero backend changes" |
 | 4 | Binary WS frames for audio instead of JSON+base64 | ~33% bandwidth/CPU overhead removed |
 | 5 | Single AEC (browser-native) for Phase 1 | Two AEC engines in series fight each other; revisit custom WASM AEC only if native quality proves insufficient in real clinic noise tests |
-| 6 | Client VAD explicitly advisory-only; server VAD authoritative | Removes ambiguity, keeps a single source of truth for turn-taking |
+| 6 | Client runs only a local RMS audio-level meter (not VAD); server VAD is the sole turn-taking authority | Removes ambiguity, keeps a single source of truth for turn-taking -- a client-side signal never participates in that decision at all |
 | 7 | `CLEAR_PLAYBACK` event + client-side jitter-buffer flush | Barge-in must stop audio in the browser, not just server-side buffers |
 | 8 | Redis session engine fronted by Sentinel, with session TTL + resume token | Single-node Redis failure currently drops every active call |
 | 9 | Audit log sink in the orchestrator | Required for any real patient-data access trail (DPDPA) |
@@ -90,7 +90,10 @@ Changes from v1.0 are marked **[NEW]** / **[CHANGED]**.
 - `packages/protocol` — shared TS types + zod schemas for every WS event, versioned.
 - `packages/web-sdk` — `@vita/web-sdk`, the browser client.
 - `apps/gateway` — Node/Fastify WS ingress: ticket issuance/verification, binary frame relay, sticky routing.
-- `apps/audio-preprocess` — Python service: DeepFilterNet + Silero VAD, gRPC/WS internal API.
+- `apps/audio-preprocess` — Python (FastAPI) service: DeepFilterNet + Silero VAD, plain
+  HTTP internal API (`POST .../process` per 20ms frame, `DELETE .../{sessionId}` on
+  teardown) -- not gRPC/WS as earlier drafts of this doc stated; validated against a
+  real p95 latency budget for the per-frame call shape (see `apps/audio-preprocess/tests`).
 - `apps/orchestrator` — Node/TS: Redis session state machine, RBAC, audit log, Groq/Sarvam/MCP/RAG orchestration.
 - `packages/mcp-1hms` — MCP server wrapping 1HMS APIs (`register_patient`, `check_slot_availability`, `book_appointment`).
 - `packages/rag` — ingestion + hybrid retrieval over Qdrant.
