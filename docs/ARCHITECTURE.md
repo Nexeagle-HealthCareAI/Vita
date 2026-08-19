@@ -26,7 +26,7 @@ Changes from v1.0 are marked **[NEW]** / **[CHANGED]**.
 |                          UNIFIED MEDIA GATEWAY                                 |
 |  - Envoy/NGINX Ingress: TLS 1.3, ticket verification (not raw JWT) [CHANGED]   |
 |  - Role is re-derived from JWT claims server-side, never trusted from client   |
-|  - Binary frame passthrough, sticky session routing, connection draining [NEW] |
+|  - Binary frame passthrough [NEW]; single-process only -- no sticky routing yet|
 |  - Frame Resampling & Transcoding                                              |
 |  - relay.ts: emits CLEAR_PLAYBACK on VAD-detected barge-in [CHANGED]           |
 +--------------------------------------------------------------------------------+
@@ -89,7 +89,10 @@ Changes from v1.0 are marked **[NEW]** / **[CHANGED]**.
 
 - `packages/protocol` — shared TS types + zod schemas for every WS event, versioned.
 - `packages/web-sdk` — `@vita/web-sdk`, the browser client.
-- `apps/gateway` — Node/Fastify WS ingress: ticket issuance/verification, binary frame relay, sticky routing.
+- `apps/gateway` — Node/Fastify WS ingress: ticket issuance/verification, binary
+  frame relay -- single-process, in-memory ticket store + `RelaySessionRegistry`
+  (Phase 1; no sticky routing or connection draining exist yet -- both need real
+  design work once a second gateway instance is ever deployed).
 - `apps/audio-preprocess` — Python (FastAPI) service: DeepFilterNet + Silero VAD, plain
   HTTP internal API (`POST .../process` per 20ms frame, `DELETE .../{sessionId}` on
   teardown) -- not gRPC/WS as earlier drafts of this doc stated; validated against a
