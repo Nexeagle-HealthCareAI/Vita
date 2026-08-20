@@ -42,11 +42,12 @@ Python audio-preprocessing service, and §1 for pushing this to GitHub.
 
 ## Status
 
-Transport, auth, session, RBAC, and audit layers are implemented and
-tested end to end. STT/LLM/TTS pipeline wiring, real DeepFilterNet/Silero
-model weights, and RAG ingestion are scaffolded with passing tests against
-mocked externals — see the status table at the bottom of
-`docs/BUILD_GUIDE.md` for exactly what's done vs. what's next.
+Every layer — transport, auth, session/RBAC, audit, the full STT/LLM/TTS
+pipeline, real DeepFilterNet/Silero model weights, and RAG ingestion — is
+implemented and tested end to end, not just scaffolded. See the status
+table at the bottom of `docs/BUILD_GUIDE.md` §7 for the current
+per-component breakdown and what's still open (mainly Prod deploy
+provisioning and a few compliance checklist items).
 
 ## Vita migration compatibility
 

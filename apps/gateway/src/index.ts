@@ -87,7 +87,13 @@ export function buildServer(deps?: {
   // never sends cookies, only an Authorization header, so credentialed requests are never
   // in play). Without this, every browser blocks the ticket POST's preflight outright.
   app.register(corsPlugin, { origin: true });
-  app.register(websocketPlugin);
+  // maxPayload: real audio frames are ~640 bytes (320 samples x 2 bytes, see
+  // RelayConfig.frameMs's doc comment) -- @fastify/websocket's (ws's) unconfigured
+  // default is 100MiB per frame, with nothing else in this gateway validating incoming
+  // frame size before it's decoded/forwarded. 64KiB is generous headroom over any real
+  // frame (audio or control-event JSON) while closing off a single-connection memory-
+  // exhaustion vector on this public-facing endpoint.
+  app.register(websocketPlugin, { options: { maxPayload: 64 * 1024 } });
 
   // Step 1: HTTPS ticket exchange. The long-lived JWT is verified here and
   // never leaves this request — the client gets back a short-lived,
@@ -180,6 +186,14 @@ export function buildServer(deps?: {
           return;
         }
         if (relay.sessionId) relaySessionRegistry.register(relay.sessionId, relay);
+      }).catch((err) => {
+        // Defense-in-depth: createSession()/resumeSession() are now airtight (never
+        // throw, see orchestratorClient.ts), but this `void ...then(...)` chain had no
+        // .catch() anywhere -- any future throw inside start() (or this .then() callback
+        // itself) would otherwise be an unhandled promise rejection, which can crash the
+        // whole gateway process and drop every other concurrent call on this instance.
+        req.log.error({ err, sub: claims.sub }, 'relay bootstrap failed unexpectedly');
+        socket.close(1011, 'internal error');
       });
 
       socket.on('message', (data: Buffer, isBinary: boolean) => {

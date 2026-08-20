@@ -28,4 +28,13 @@ describe('SarvamSttProvider', () => {
     const client = new SarvamSttProvider('key', STT_URL, fetchImpl);
     await expect(client.transcribe(new Uint8Array([1]))).rejects.toThrow(/400/);
   });
+
+  it('attaches an AbortSignal so a hung Sarvam connection can never freeze a call indefinitely', async () => {
+    const fetchImpl = fakeFetch({ transcript: 'ok' });
+    const client = new SarvamSttProvider('key', STT_URL, fetchImpl);
+    await client.transcribe(new Uint8Array([1]));
+
+    const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect((init as RequestInit).signal).toBeInstanceOf(AbortSignal);
+  });
 });

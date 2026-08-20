@@ -16,6 +16,11 @@ export class GroqBrainProvider implements BrainProvider {
     // lets tools/load-test point a real GroqBrainProvider at a local mock-vendor stub
     // instead of the real (paid, non-deterministic) API, without touching pipeline.ts.
     private apiUrl: string = DEFAULT_GROQ_API_URL,
+    // Bounds a single round's completion (chat() or one chatStream() call -- pipeline.ts
+    // calls this once per tool-round, not once per turn) -- previously unbounded, so a
+    // hung/slow Groq connection could freeze a live call indefinitely with no recovery.
+    // Generous versus this call's normal latency, but still bounded for a live voice turn.
+    private timeoutMs = Number(process.env.GROQ_REQUEST_TIMEOUT_MS ?? 15_000),
   ) {}
 
   async chat(messages: ChatMessage[], tools: ToolSchema[], model: string): Promise<ChatResult> {
@@ -32,6 +37,7 @@ export class GroqBrainProvider implements BrainProvider {
         tool_choice: tools.length > 0 ? 'auto' : undefined,
         stream: false,
       }),
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
 
     if (!res.ok) {
@@ -85,6 +91,7 @@ export class GroqBrainProvider implements BrainProvider {
         tool_choice: tools.length > 0 ? 'auto' : undefined,
         stream: true,
       }),
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
 
     if (!res.ok) {

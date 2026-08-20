@@ -269,6 +269,57 @@ describe('orchestrator streaming STT route (GET /session/:id/stream)', () => {
     expect(c.jsonMessages.find((m) => m.event === 'turn.form_autofill')).toBeUndefined();
   });
 
+  it('a book_appointment that succeeds on the FINAL allowed round is reported back via the grounding round, not a generic fallback (streaming path)', async () => {
+    // Streaming-path counterpart to pipeline.test.ts's identical non-streaming regression
+    // test -- both paths implement the MAX_TOOL_ROUNDS grounding-round fix independently.
+    const brain = mockGroqStream([
+      [{ done: true, toolCalls: [{ id: 'c1', name: 'check_doctor_availability', arguments: { doctorId: 'd-1', preferredDate: '2026-08-20' } }] }],
+      [{ done: true, toolCalls: [{ id: 'c2', name: 'check_doctor_availability', arguments: { doctorId: 'd-1', preferredDate: '2026-08-20' } }] }],
+      [
+        {
+          done: true,
+          toolCalls: [
+            { id: 'c3', name: 'book_appointment', arguments: { doctorId: 'd-1', patientName: 'Riya Sharma', patientMobile: '9999999999', preferredDate: '2026-08-20' } },
+          ],
+        },
+      ],
+      [{ contentDelta: "You're all set.", done: false }, { done: true, toolCalls: undefined }],
+    ]);
+    const tts = mockTts(new Uint8Array([9, 9, 9]));
+    const hms = mockHms();
+    const sarvamRealtime = fakeSarvamRealtime({ finalTranscriptOnSpeechEnd: 'book Riya Sharma with Dr Patel, mobile 9999999999' });
+
+    app = buildServer(new RedisMock(), {
+      brain,
+      stt: mockStt(),
+      tts,
+      hms,
+      streamingSttSessionFactory: () => sarvamRealtime,
+      connectionGate: fakeGate(),
+    });
+    await createSession(app);
+    await app.listen({ port: 0 });
+    const address = app.server.address();
+    if (typeof address !== 'object' || address === null) throw new Error('no server address');
+
+    ws = new WebSocket(`ws://127.0.0.1:${address.port}/session/sess-1/stream`);
+    ws.binaryType = 'nodebuffer';
+    const c = collector(ws);
+    await new Promise<void>((resolve, reject) => {
+      ws!.on('open', resolve);
+      ws!.on('error', reject);
+    });
+
+    await c.waitForEvent('stream.ready');
+    ws.send(JSON.stringify({ event: 'speech_start' }));
+    ws.send(JSON.stringify({ event: 'speech_end' }));
+
+    const reply = await c.waitForEvent('turn.reply');
+    expect(reply).toEqual({ event: 'turn.reply', text: "You're all set.", final: true });
+    expect(hms.bookAppointment).toHaveBeenCalledTimes(1);
+    expect(brain.chatStream).toHaveBeenCalledTimes(4);
+  });
+
   it('closes with 4004 when the session does not exist', async () => {
     app = buildServer(new RedisMock(), {
       brain: mockGroq([]),
@@ -397,5 +448,41 @@ describe('orchestrator streaming STT route (GET /session/:id/stream)', () => {
       message: 'connection closed unexpectedly: code=1011',
       recoverable: true,
     });
+  });
+
+  it('a client disconnect while Sarvam realtime connect() is still in flight ends that connection once it resolves, instead of leaking it', async () => {
+    let resolveConnect!: () => void;
+    const sarvamRealtime = fakeSarvamRealtime({ connect: () => new Promise((resolve) => { resolveConnect = resolve; }) });
+
+    app = buildServer(new RedisMock(), {
+      brain: mockGroq([]),
+      stt: mockStt(),
+      tts: mockTts(),
+      hms: mockHms(),
+      streamingSttSessionFactory: () => sarvamRealtime,
+      connectionGate: fakeGate(),
+    });
+    await createSession(app);
+    await app.listen({ port: 0 });
+    const address = app.server.address();
+    if (typeof address !== 'object' || address === null) throw new Error('no server address');
+
+    ws = new WebSocket(`ws://127.0.0.1:${address.port}/session/sess-1/stream`);
+    await new Promise<void>((resolve, reject) => {
+      ws!.on('open', resolve);
+      ws!.on('error', reject);
+    });
+
+    // Close before Sarvam's connect() resolves -- init() is still awaiting it when the
+    // server's own 'close' handler (index.ts) runs handler.onClose(), which previously
+    // found this.sttSession still undefined (assigned only after connect() resolves) and
+    // had nothing to end().
+    const closed = new Promise<void>((resolve) => ws!.on('close', () => resolve()));
+    ws.close();
+    await closed;
+    await new Promise((r) => setTimeout(r, 20)); // let the server-side close handler run
+
+    resolveConnect();
+    await vi.waitFor(() => expect(sarvamRealtime.end).toHaveBeenCalledTimes(1));
   });
 });

@@ -95,6 +95,15 @@ export class ConnectionRelay {
   private state: RelayState = 'LISTENING';
   private _sessionId: string | null = null;
   private backend: TurnBackend | null = null;
+  /** Set synchronously by onBackendError's non-recoverable branch -- distinct from
+   * _sessionId, which deliberately stays valid until the socket's real 'close' event runs
+   * close() (onBackendError hands off to deps.close() directly rather than nulling
+   * _sessionId itself, mirroring the hello-timeout path below, so index.ts's close
+   * handler can still see a real sessionId to unregister/tear down with). Frame
+   * processing and the hello-timeout guard check THIS instead, so a connection that's
+   * mid-teardown but whose socket hasn't actually finished closing yet doesn't keep
+   * relaying audio or fire a second, redundant fatal error. */
+  private terminated = false;
 
   private buffer: Uint8Array[] = [];
   private preRoll: Uint8Array[] = [];
@@ -127,11 +136,31 @@ export class ConnectionRelay {
 
   private frameQueue: Promise<void> = Promise.resolve();
 
+  /** Resolves once start() concludes, success or failure -- awaited by processFrame() for
+   * any frame that arrives before then (see that method's own comment) so audio received
+   * during the orchestrator session-bootstrap window is buffered-by-waiting rather than
+   * silently dropped. Also resolved by close() in the unusual case that the connection is
+   * torn down before start() itself ever concludes. */
+  private sessionReady: Promise<void>;
+  private resolveSessionReady: () => void = () => {};
+  /** True only once BOTH _sessionId AND backend are assigned (or start() has definitively
+   * failed) -- deliberately NOT the same check as `!this._sessionId` alone. _sessionId is
+   * assigned synchronously, before the (potentially slow -- a real streaming-backend
+   * connect attempt) `await backendFactory.create(...)` that assigns `backend`. A frame
+   * arriving in that gap would see _sessionId already truthy and skip waiting entirely,
+   * then call this.backend?.pushFrame()/etc. while backend is still null -- silently
+   * no-op'd by optional chaining, permanently losing that utterance's VAD state with no
+   * further frames ever able to recover it. processFrame() gates on this flag instead. */
+  private sessionEstablished = false;
+
   constructor(
     private readonly deps: RelayDeps,
     config?: Partial<RelayConfig>,
   ) {
     this.config = { ...DEFAULT_RELAY_CONFIG, ...config };
+    this.sessionReady = new Promise((resolve) => {
+      this.resolveSessionReady = resolve;
+    });
   }
 
   /** Read-only accessor for the established orchestrator sessionId -- null before start()
@@ -163,7 +192,11 @@ export class ConnectionRelay {
         hospitalId: this.deps.claims.hospitalId,
         hmsAccessToken: this.deps.claims.hmsAccessToken,
       });
-      if (!created) return false;
+      if (!created) {
+        this.sessionEstablished = true;
+        this.resolveSessionReady(); // unblock any frame already waiting in processFrame() -- there's no session to process it against
+        return false;
+      }
       established = { ...created, resumed: false };
     }
 
@@ -179,6 +212,8 @@ export class ConnectionRelay {
       onFormAutofill: (data) => this.onFormAutofill(data),
       onError: (error) => this.onBackendError(error),
     });
+    this.sessionEstablished = true;
+    this.resolveSessionReady(); // unblocks any frame that arrived (and is waiting in processFrame()) before this point
     this.sendJson({
       event: 'SESSION_READY',
       sessionId: established.sessionId,
@@ -188,10 +223,10 @@ export class ConnectionRelay {
 
     if (this.config.protocolVersionEnforcementEnabled) {
       this.helloTimer = setTimeout(() => {
-        // !this._sessionId: an unrelated non-recoverable backend error (onBackendError)
-        // may already have killed this connection during the grace window -- don't pile
-        // a second, unrelated fatal error onto an already-dead session.
-        if (this.helloReceived || !this._sessionId) return;
+        // this.terminated: an unrelated non-recoverable backend error (onBackendError)
+        // may already be tearing this connection down -- don't pile a second, unrelated
+        // fatal error onto it.
+        if (this.helloReceived || this.terminated) return;
         this.sendJson({
           event: 'ERROR',
           code: 'UNSUPPORTED_PROTOCOL_VERSION',
@@ -257,13 +292,31 @@ export class ConnectionRelay {
       this.backend?.close();
     }
     this._sessionId = null;
+    this.sessionEstablished = true;
+    this.resolveSessionReady(); // in case close() runs before start() itself ever concludes -- no-op (already resolved) otherwise
     // Unconditional & idempotent -- calling .close() on an already-closed socket is a
     // documented no-op, same precedent stopSession() already relies on in the web-sdk.
     this.deps.close?.();
   }
 
   private async processFrame(frame: Uint8Array): Promise<void> {
-    if (!this._sessionId) return; // bootstrap failed, or a prior turn ended the session (non-recoverable error)
+    if (this.terminated) return;
+    if (!this.sessionEstablished) {
+      // start() hasn't fully concluded yet -- audio frames flow in as soon as the WS
+      // opens (index.ts registers the message handler without awaiting start()), well
+      // before an orchestrator session-bootstrap HTTP call (and, for a streaming-enabled
+      // call, a real backend connect attempt on top of that) typically completes. Wait
+      // rather than drop: frameQueue already serializes every call to this method in
+      // arrival order, so waiting here (instead of a separate buffer-then-replay
+      // mechanism) keeps buffered and live frames in that same strict order for free.
+      // sessionReady always eventually resolves (start() succeeds, fails, or close() runs
+      // first) -- see their own resolveSessionReady() call sites. Gated on
+      // sessionEstablished, NOT `!this._sessionId` -- see that field's own doc comment
+      // for why checking _sessionId alone here re-opens the exact race this exists to
+      // close (backend can still be null even once _sessionId is truthy).
+      await this.sessionReady;
+      if (this.terminated || !this._sessionId) return; // start() failed, or this connection has since been torn down
+    }
 
     if (this.state === 'PROCESSING') {
       // No overlapping turns in Phase 1 -- audio received mid-turn is dropped, not queued.
@@ -422,7 +475,23 @@ export class ConnectionRelay {
       this.setState('LISTENING');
     } else {
       this.sendJson({ event: 'STATE_CHANGE', state: 'ERROR' });
-      this._sessionId = null; // stop relaying entirely until the client reconnects
+      this.terminated = true; // stop relaying further audio immediately, even though the socket itself may take a moment to actually finish closing
+      // Close the underlying transport, not just this relay's own bookkeeping -- so the
+      // socket's real 'close' handler (index.ts) runs relay.close(), which tears down
+      // audioPreprocess state AND this.backend (e.g. a persistent internal orchestrator
+      // stream WS for a streaming-backend call) and unregisters from
+      // RelaySessionRegistry. Previously this only nulled _sessionId locally: the socket
+      // itself, and everything downstream of it, stayed open/leaked indefinitely, and the
+      // client had no way to recover -- neither web-sdk's ERROR nor STATE_CHANGE handling
+      // triggers a reconnect, only a real socket close does (see web-sdk's ws.onclose).
+      //
+      // deps.close directly, NOT this.close() -- same reasoning as the hello-timeout path
+      // above: this.close() would null _sessionId before the socket's real 'close' event
+      // fires, making index.ts's handler find sessionId already null and silently skip
+      // unregistering/tearing down. Code 4004 (distinct from 4003's non-retriable
+      // protocol-version rejection) so web-sdk's onclose falls into its default,
+      // reconnect-eligible branch.
+      this.deps.close?.(4004, error.code);
     }
   }
 

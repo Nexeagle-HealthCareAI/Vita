@@ -74,6 +74,17 @@ export class TeraWebSDK {
   // already-consented session doesn't silently downgrade to no-consent). Reset on
   // stopSession() -- a fresh explicit start must re-assert consent, same as resumeToken.
   private consentGiven = false;
+  /** Bumped by every startSession() call and by stopSession() -- the single source of
+   * truth for "is this specific in-flight start/connect attempt still the one in charge."
+   * Each async step below (post-fetchTicket, post-WS-open, post-initAudioCapture) captures
+   * the generation current at its OWN call's start and re-checks it after every await,
+   * bailing out (never touching this.ws, never opening the mic) if a stopSession() or a
+   * newer startSession() superseded it in the meantime. Without this, stopSession() firing
+   * while a ticket fetch (or the mic-permission prompt) was in flight would tear the
+   * connection down correctly, only for the stale call to resolve afterward and silently
+   * reconnect / re-open the mic anyway -- overriding the user's just-revoked consent. */
+  private connectGeneration = 0;
+  private ticketFetchAbort: AbortController | null = null;
 
   constructor(config: TeraConfig) {
     this.config = config;
@@ -90,10 +101,15 @@ export class TeraWebSDK {
     this.consentGiven = true;
     this.userInitiatedStop = false;
     this.torn_down = false;
+    const generation = ++this.connectGeneration;
+    const abort = new AbortController();
+    this.ticketFetchAbort = abort;
     try {
-      const ticket = await this.fetchTicket();
-      this.connect(ticket);
+      const ticket = await this.fetchTicket(abort.signal);
+      if (generation !== this.connectGeneration) return; // superseded by a stop/restart while the fetch was in flight
+      this.connect(ticket, generation);
     } catch (err) {
+      if (abort.signal.aborted || generation !== this.connectGeneration) return; // stopSession() caused this rejection, not a real failure
       this.emitError('TICKET_FETCH_FAILED', err, /* recoverable */ true);
       this.scheduleReconnect();
     }
@@ -106,7 +122,7 @@ export class TeraWebSDK {
    * old/unmodified SDK build (which never sends either field) is unaffected. consentGiven
    * is always true here (startSession()'s guard already returned otherwise) -- sent
    * explicitly so the gateway/orchestrator have a real value to audit rather than assuming. */
-  private async fetchTicket(): Promise<string> {
+  private async fetchTicket(signal: AbortSignal): Promise<string> {
     const requestBody: { resumeSessionId?: string; resumeToken?: string; consentGiven: boolean } = {
       consentGiven: this.consentGiven,
     };
@@ -118,6 +134,7 @@ export class TeraWebSDK {
       method: 'POST',
       headers: { Authorization: `Bearer ${this.config.authToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(requestBody),
+      signal,
     });
     if (!res.ok) {
       throw new Error(`ticket exchange failed: ${res.status}`);
@@ -126,38 +143,61 @@ export class TeraWebSDK {
     return body.ticket;
   }
 
-  private connect(ticket: string): void {
+  private connect(ticket: string, generation: number): void {
     const wsUrl = this.config.gatewayOrigin.replace(/^http/, 'ws');
     // Short-lived, single-use ticket passed as a WS subprotocol rather than a
     // query-string token — it's still visible to the immediate proxy hop but
     // expires in seconds and can only be redeemed once, unlike a raw JWT.
-    this.ws = new WebSocket(`${wsUrl}/v1/stream`, [`vita-ticket.${ticket}`]);
-    this.ws.binaryType = 'arraybuffer';
+    // Captured in a local (not read back via this.ws) so a stale/superseded connection's
+    // own handlers below always act on the socket THEY opened, never on whatever
+    // this.ws happens to point at by the time they run (which may since be a newer one).
+    const socket = new WebSocket(`${wsUrl}/v1/stream`, [`vita-ticket.${ticket}`]);
+    socket.binaryType = 'arraybuffer';
+    this.ws = socket;
 
-    this.ws.onopen = async () => {
+    socket.onopen = async () => {
+      if (generation !== this.connectGeneration) {
+        // stopSession() (or a newer startSession()) fired while the WS handshake was in
+        // flight -- this socket is already stale. Close it directly rather than never
+        // touching it, and return before ever sending HELLO or prompting for the mic.
+        socket.close();
+        return;
+      }
       this.reconnectAttempt = 0;
       // Sent unconditionally, regardless of whether the gateway's
       // PROTOCOL_VERSION_ENFORCEMENT_ENABLED kill-switch is on -- so flipping enforcement
       // on later needs no coordinated client redeploy. Synchronous, before the mic-permission
       // dependent initAudioCapture() below, to give the gateway's grace-period timer the best
       // realistic chance of seeing this before any audio frame (not a strict guarantee).
-      this.ws!.send(JSON.stringify({ event: 'HELLO', version: PROTOCOL_VERSION, role: this.config.userRole }));
+      socket.send(JSON.stringify({ event: 'HELLO', version: PROTOCOL_VERSION, role: this.config.userRole }));
       this.setState('LISTENING');
       try {
         await this.initAudioCapture();
       } catch (err) {
         this.emitError('AUDIO_CAPTURE_FAILED', err, /* recoverable */ false);
         this.setState('ERROR');
+        return;
+      }
+      if (generation !== this.connectGeneration) {
+        // stopSession() fired while getUserMedia()/AudioWorklet setup was itself in
+        // flight (that permission prompt can take an arbitrary amount of real time) --
+        // don't leave a mic freshly opened under a session that's already been torn down.
+        this.teardownAudio();
+        socket.close();
       }
     };
 
-    this.ws.onmessage = (event) => this.handleMessage(event);
+    socket.onmessage = (event) => this.handleMessage(event);
 
-    this.ws.onerror = () => {
+    socket.onerror = () => {
       this.emitError('SOCKET_ERROR', new Error('WebSocket error'), /* recoverable */ true);
     };
 
-    this.ws.onclose = (event) => {
+    socket.onclose = (event) => {
+      // Checked BEFORE teardownAudio(), not after -- a superseded (stale) generation's
+      // close must never tear down a NEWER generation's already-live mic/AudioContext (a
+      // fast stop-then-restart can leave this stale close firing after the new one is up).
+      if (generation !== this.connectGeneration) return;
       this.teardownAudio();
       if (this.userInitiatedStop || this.torn_down) {
         this.setState('IDLE');
@@ -295,6 +335,12 @@ export class TeraWebSDK {
     if (this.torn_down) return;
     this.torn_down = true;
     this.userInitiatedStop = true;
+    // Invalidates any startSession()/connect() currently in flight -- see
+    // connectGeneration's own doc comment for why this is what actually prevents the mic
+    // from silently re-activating after this explicit stop.
+    this.connectGeneration++;
+    this.ticketFetchAbort?.abort();
+    this.ticketFetchAbort = null;
     this.resumeSessionId = null;
     this.resumeToken = null; // an explicit hangup must never be resumable afterward
     this.consentGiven = false; // a fresh explicit start must re-assert consent

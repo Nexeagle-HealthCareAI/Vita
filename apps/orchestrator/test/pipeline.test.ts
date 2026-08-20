@@ -169,6 +169,58 @@ describe('runTurn — scripted conversation (golden-fixture style, per docs/BUIL
     expect(receptionistTools.map((t) => t.function.name)).toContain('book_appointment');
   });
 
+  it('a successful book_appointment audits patientRef with the real patientId, so the trail can answer "who touched this patient"', async () => {
+    const brain = mockGroq([
+      {
+        content: null,
+        toolCalls: [
+          {
+            id: 'call_1',
+            name: 'book_appointment',
+            arguments: { doctorId: 'd-1', patientName: 'Riya Sharma', patientMobile: '9999999999', preferredDate: '2026-08-20' },
+          },
+        ],
+      },
+      { content: 'Booked.', toolCalls: [] },
+    ]);
+    const tts = mockTts();
+    const hms = mockHms();
+    hms.bookAppointment = vi.fn().mockResolvedValue({ success: true, message: null, appointmentId: 'a-1', patientId: 'p-1', isReminderSent: true });
+    const auditSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await runTurn({ session: baseSession(), transcript: 'Book Riya Sharma with a cardiologist', brain, tts, hms });
+
+    const auditLines = auditSpy.mock.calls.map((c) => JSON.parse(c[0] as string));
+    expect(auditLines).toContainEqual(
+      expect.objectContaining({ type: 'AUDIT', action: 'tool_call:book_appointment', outcome: 'success', patientRef: 'p-1' }),
+    );
+    auditSpy.mockRestore();
+  });
+
+  it('a successful mark_appointment_arrived audits patientRef with the appointmentId argument', async () => {
+    const brain = mockGroq([
+      { content: null, toolCalls: [{ id: 'call_1', name: 'mark_appointment_arrived', arguments: { appointmentId: 'appt-1', doctorId: 'd-1' } }] },
+      { content: 'Marked arrived.', toolCalls: [] },
+    ]);
+    const tts = mockTts();
+    const hms = mockHms();
+    const auditSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await runTurn({
+      session: baseSession({ hospitalId: 'h-1', hmsAccessToken: 'staff-token' }),
+      transcript: 'Mark this patient as arrived',
+      brain,
+      tts,
+      hms,
+    });
+
+    const auditLines = auditSpy.mock.calls.map((c) => JSON.parse(c[0] as string));
+    expect(auditLines).toContainEqual(
+      expect.objectContaining({ type: 'AUDIT', action: 'tool_call:mark_appointment_arrived', outcome: 'success', patientRef: 'appt-1' }),
+    );
+    auditSpy.mockRestore();
+  });
+
   it("upfront RBAC: a doctor session's system prompt never mentions book_appointment; a receptionist session's does", async () => {
     const brain = mockGroq([{ content: 'ok', toolCalls: [] }]);
     const result = await runTurn({ session: baseSession({ persona: 'ROLE_DOCTOR', permissions: ['doc_board'] }), transcript: 'hi', brain, tts: mockTts(), hms: mockHms() });
@@ -231,7 +283,9 @@ describe('runTurn — rosterText (doctor-roster injection)', () => {
 
 describe('runTurn — round cap (a live call must never hang)', () => {
   it('stops after MAX_TOOL_ROUNDS and returns a safe fallback reply instead of looping forever', async () => {
-    // Groq keeps requesting the same tool call every round, never producing a final answer.
+    // Groq keeps requesting the same tool call every round, never producing a final answer
+    // even on the grounding round (tools:[] is passed, but this mock doesn't enforce that
+    // constraint -- it just returns whatever content the caller told it to, here still null).
     const alwaysToolCall: ChatResult = {
       content: null,
       toolCalls: [{ id: 'call_x', name: 'check_doctor_availability', arguments: { doctorId: 'd-1', preferredDate: '2026-08-20' } }],
@@ -243,8 +297,62 @@ describe('runTurn — round cap (a live call must never hang)', () => {
     const result = await runTurn({ session: baseSession(), transcript: 'loop forever please', brain, tts, hms });
 
     expect(result.replyText).toMatch(/trouble completing|repeat/i);
-    // Exactly 3 rounds of brain.chat -- the cap, not unbounded.
-    expect((brain.chat as ReturnType<typeof vi.fn>).mock.calls.length).toBe(3);
+    // 3 rounds of brain.chat (the cap) + 1 final tool-less grounding round -- see the next
+    // test for why that grounding round exists at all.
+    expect((brain.chat as ReturnType<typeof vi.fn>).mock.calls.length).toBe(4);
+    expect((brain.chat as ReturnType<typeof vi.fn>).mock.calls[3][1]).toEqual([]); // the grounding round offers no tools
+  });
+
+  it('a tool call that succeeds on the FINAL allowed round is reported back via the grounding round, never silently overwritten with the generic fallback', async () => {
+    // Regression test for a real bug: previously, hitting MAX_TOOL_ROUNDS unconditionally
+    // replaced the reply with a generic "sorry, try again" message -- even when the very
+    // last round's tool call had just succeeded (e.g. a real book_appointment). That told
+    // the caller a booking failed when it had actually gone through, risking a duplicate
+    // booking on retry.
+    const checkAvailability: ChatResult = {
+      content: null,
+      toolCalls: [{ id: 'call_x', name: 'check_doctor_availability', arguments: { doctorId: 'd-1', preferredDate: '2026-08-20' } }],
+    };
+    const bookAppointment: ChatResult = {
+      content: null,
+      toolCalls: [
+        {
+          id: 'call_y',
+          name: 'book_appointment',
+          arguments: { doctorId: 'd-1', patientName: 'Riya Sharma', patientMobile: '9999999999', preferredDate: '2026-08-20' },
+        },
+      ],
+    };
+    const brain = mockGroq([
+      checkAvailability, // round 1
+      checkAvailability, // round 2
+      bookAppointment, // round 3 -- hits MAX_TOOL_ROUNDS, but this call actually succeeds
+      { content: "You're all set -- we've booked that appointment.", toolCalls: [] }, // grounding round
+    ]);
+    const tts = mockTts();
+    const hms = mockHms();
+
+    const result = await runTurn({ session: baseSession(), transcript: 'book it', brain, tts, hms });
+
+    expect(hms.bookAppointment).toHaveBeenCalledTimes(1);
+    expect(result.replyText).toBe("You're all set -- we've booked that appointment.");
+    expect(result.replyText).not.toMatch(/trouble completing|repeat/i);
+    expect((brain.chat as ReturnType<typeof vi.fn>).mock.calls.length).toBe(4);
+  });
+
+  it('a brain.chat failure on the grounding round still falls back to the generic message instead of throwing', async () => {
+    const alwaysToolCall: ChatResult = {
+      content: null,
+      toolCalls: [{ id: 'call_x', name: 'check_doctor_availability', arguments: { doctorId: 'd-1', preferredDate: '2026-08-20' } }],
+    };
+    const brain = mockGroq([alwaysToolCall, alwaysToolCall, alwaysToolCall]);
+    (brain.chat as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('groq unavailable')); // the 4th (grounding) call
+    const tts = mockTts();
+    const hms = mockHms();
+
+    const result = await runTurn({ session: baseSession(), transcript: 'loop forever please', brain, tts, hms });
+
+    expect(result.replyText).toMatch(/trouble completing|repeat/i);
   });
 });
 

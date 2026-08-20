@@ -662,16 +662,23 @@ place of the shared-VM reverse proxy in §4.3. Not required for Phase 1 launch.
 
 ## 7. Summary of what's already built vs. what's next
 
+**This table previously described a much earlier, scaffold-stage snapshot of this repo
+(orchestrator relay/pipeline as TODOs, real model weights as TODOs, RAG ingestion as a
+TODO) that had gone stale relative to the rest of this document and the actual code —
+every section above it (§3.1-3.5, §3.8, §6) already describes these as shipped. Treat
+those per-module sections as authoritative if this table and they ever disagree again;
+this one is a summary, not the source of truth.**
+
 | Component | Status |
 |---|---|
 | `@vita/protocol` | done, tested |
 | `@vita/web-sdk` | done, tested (transport/audio/playback layer) |
-| `apps/gateway` | ticket auth done, tested; orchestrator relay is a TODO |
-| `apps/orchestrator` | session/RBAC/audit done, tested; STT/LLM/TTS pipeline is a TODO |
-| `apps/audio-preprocess` | service scaffold done, tested; real model weights are a TODO |
-| `@vita/mcp-1hms` | done, tested against mocked 1HMS API |
-| `@vita/rag` | BM25 + fusion done, tested; embeddings + ingestion are a TODO |
-| `apps/web-demo` | done, tested (UI layer) |
+| `apps/gateway` | done, tested — ticket auth, VAD-segmented relay, barge-in, session resume, protocol-version enforcement, streaming + batch turn backends |
+| `apps/orchestrator` | done, tested — session/permission-key-RBAC/audit, full STT (Sarvam batch + realtime) → LLM (Groq, tool-calling) → TTS (Sarvam) pipeline, slot-tracking, doctor-roster injection, staff-JWT-forwarded 1HMS calls |
+| `apps/audio-preprocess` | done, tested — real Silero VAD + DeepFilterNet3 wired in as the actual runtime default (see §3.4), not mocked |
+| `@vita/mcp-1hms` | done, tested against a mocked 1HMS API, plus a nightly contract test (`hmsClient.contract.test.ts`) against the real one |
+| `@vita/rag` | done, tested — BM25 + dense (Qdrant) hybrid retrieval, real embeddings + ingestion pipeline (`pnpm ingest`) |
+| `apps/web-demo` | done, tested (UI layer) — reference/example integration only, not part of this repo's own deploy |
 | CI (`ci.yml`) | done — lint/typecheck/build/test on every PR |
-| CD (`deploy.yml`) | done — builds images, deploys to E2E VM on `main` |
-| Compliance | not started — see §6 before go-live |
+| CD (`deploy.yml`) | done — builds images, deploys to Dev on `develop`; Prod (`main`) is wired up but pending VM/secrets provisioning |
+| Compliance | mostly done — session encryption at rest, the DPDPA consent gate, and the durable audit trail are shipped (see §6); remaining items (e.g. reviewing `HMS_API_KEY`'s access scope) are tracked as open checklist items in §6, not unstarted |

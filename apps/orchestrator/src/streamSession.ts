@@ -61,6 +61,14 @@ export interface StreamSessionDeps {
 export class StreamSessionHandler {
   private sttSession: StreamingSttSession | undefined;
   private dead = false;
+  /** Set by onClose() -- checked right after connectionGate.acquire()/sttSession.connect()
+   * resolve in init(), since onClose() can fire (a client disconnecting mid-handshake)
+   * before this.sttSession is ever assigned. Without this, onClose() finds this.sttSession
+   * still undefined (a no-op end()), and the just-established Sarvam realtime connection
+   * gets assigned afterward with nothing left to ever call .end() on it again -- a slow
+   * leak of live, rate-limited Sarvam connections under any nonzero rate of instant
+   * hangups, undermining connectionGate's own purpose of protecting that shared limiter. */
+  private closed = false;
   /** Set by an inbound turn.abort (the gateway's ConnectionRelay sends this when the user
    * barges in mid-reply) and checked by runTurn between rounds, so a barge-in stops
    * further generation/synthesis instead of wastefully continuing a reply nobody's
@@ -83,6 +91,13 @@ export class StreamSessionHandler {
       });
       sttSession.onFatal((reason) => this.handleFatal(reason));
       await sttSession.connect(this.deps.connectTimeoutMs);
+      if (this.closed) {
+        // The client's WS closed while connect() was still in flight -- onClose() already
+        // ran and found this.sttSession still undefined, so it couldn't end() this
+        // connection itself. End it now instead of leaking it.
+        sttSession.end();
+        return;
+      }
       this.sttSession = sttSession;
       this.sendJson({ event: 'stream.ready' });
     } catch (err) {
@@ -123,6 +138,7 @@ export class StreamSessionHandler {
   }
 
   onClose(): void {
+    this.closed = true;
     this.sttSession?.end();
   }
 

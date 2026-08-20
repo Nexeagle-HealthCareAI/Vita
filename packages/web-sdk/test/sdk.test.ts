@@ -94,6 +94,50 @@ describe('TeraWebSDK — ticket fetch & error handling', () => {
     expect(global.fetch).not.toHaveBeenCalled();
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ code: 'CONSENT_REQUIRED', recoverable: false }));
   });
+
+  it('stopSession() during an in-flight fetchTicket() prevents the stale startSession() from connecting (and re-opening the mic) once the fetch resolves', async () => {
+    let resolveFetch!: (value: { ok: boolean; json: () => Promise<{ ticket: string }> }) => void;
+    global.fetch = vi.fn().mockReturnValue(new Promise((resolve) => { resolveFetch = resolve; }));
+    const sdk = new TeraWebSDK(baseConfig);
+
+    const startPromise = sdk.startSession(true);
+    sdk.stopSession(); // fires while the ticket fetch is still pending
+
+    resolveFetch({ ok: true, json: () => Promise.resolve({ ticket: 'tic-1' }) });
+    await startPromise;
+
+    // The stale startSession() call must never open a socket once it's been superseded
+    // by an explicit stop -- that's what would otherwise silently re-open the mic.
+    expect(FakeWebSocket.instances.length).toBe(0);
+  });
+
+  it('stopSession() aborts an in-flight ticket fetch via AbortSignal', async () => {
+    let capturedSignal: AbortSignal | undefined;
+    global.fetch = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      capturedSignal = init.signal as AbortSignal;
+      return new Promise(() => {}); // never resolves -- only the signal matters here
+    });
+    const sdk = new TeraWebSDK(baseConfig);
+
+    void sdk.startSession(true);
+    await Promise.resolve();
+    expect(capturedSignal?.aborted).toBe(false);
+
+    sdk.stopSession();
+    expect(capturedSignal?.aborted).toBe(true);
+  });
+
+  it('a stale WS connection opened before stopSession() never sends HELLO if onopen fires after the stop', async () => {
+    global.fetch = fetchOkWithTicket();
+    const sdk = new TeraWebSDK(baseConfig);
+
+    await sdk.startSession(true);
+    const ws = FakeWebSocket.instances[0];
+    sdk.stopSession();
+    await ws.onopen?.();
+
+    expect(ws.send).not.toHaveBeenCalled();
+  });
 });
 
 describe('TeraWebSDK — SESSION_RESUME (resume credentials across a reconnect)', () => {

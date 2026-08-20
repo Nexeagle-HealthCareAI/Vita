@@ -357,14 +357,15 @@ describe('ConnectionRelay', () => {
     expect(orchestrator.postAudioTurn).toHaveBeenCalledTimes(2);
   });
 
-  it('a non-recoverable orchestrator error sends ERROR + STATE_CHANGE:ERROR and stops relaying entirely', async () => {
+  it('a non-recoverable orchestrator error sends ERROR + STATE_CHANGE:ERROR, closes the socket (4004, reconnect-eligible), and stops relaying entirely', async () => {
     const orchestrator = fakeOrchestrator({ ok: false, error: { code: 'SESSION_NOT_FOUND', message: 'gone', recoverable: false } });
     const audioPreprocess = fakeAudioPreprocess();
     (audioPreprocess.process as ReturnType<typeof vi.fn>).mockResolvedValue({ frame: frame(1), speechDetected: true });
 
     const sent: (string | Uint8Array)[] = [];
+    const closeSpy = vi.fn();
     const relay = new ConnectionRelay(
-      { audioPreprocess, orchestrator, backendFactory: fakeBackendFactory(orchestrator), claims: CLAIMS, send: (d) => sent.push(d) },
+      { audioPreprocess, orchestrator, backendFactory: fakeBackendFactory(orchestrator), claims: CLAIMS, send: (d) => sent.push(d), close: closeSpy },
       { minUtteranceSpeechMs: 20, maxUtteranceMs: 20 },
     );
     await relay.start();
@@ -378,6 +379,16 @@ describe('ConnectionRelay', () => {
       { event: 'ERROR', code: 'SESSION_NOT_FOUND', message: 'gone', recoverable: false },
       { event: 'STATE_CHANGE', state: 'ERROR' },
     ]);
+    // Real socket close, not just internal bookkeeping -- lets the client actually
+    // reconnect (web-sdk's onclose retries on any code but 4003) and lets index.ts's own
+    // 'close' handler run the real relay.close() teardown (previously this leaked
+    // audioPreprocess/backend state indefinitely -- this locks in that leak fix).
+    expect(closeSpy).toHaveBeenCalledWith(4004, 'SESSION_NOT_FOUND');
+    // sessionId deliberately stays set here -- close() itself (not onBackendError) is what
+    // nulls it, and in production that only happens once the socket's real 'close' event
+    // fires and index.ts's handler runs relay.close(), same pattern the hello-timeout path
+    // below already relies on.
+    expect(relay.sessionId).toBe('sess-1');
 
     const callsBefore = (audioPreprocess.process as ReturnType<typeof vi.fn>).mock.calls.length;
     await sendFrame(relay, frame(3));
@@ -835,7 +846,7 @@ describe('ConnectionRelay', () => {
       expect(closeSpy).toHaveBeenCalledWith(4003, 'unsupported protocol version');
     });
 
-    it('a non-recoverable backend error that nulls sessionId before the timer fires suppresses the redundant ERROR/close', async () => {
+    it('a non-recoverable backend error closes the socket once; the hello-timer, if it later fires, does not pile on a redundant close', async () => {
       const orchestrator = fakeOrchestrator({ ok: false, error: { code: 'SESSION_NOT_FOUND', message: 'gone', recoverable: false } });
       const audioPreprocess = fakeAudioPreprocess();
       (audioPreprocess.process as ReturnType<typeof vi.fn>).mockResolvedValue({ frame: frame(1), speechDetected: true });
@@ -855,12 +866,14 @@ describe('ConnectionRelay', () => {
       await relay.start();
 
       await sendFrame(relay, frame(1)); // arms
-      await sendFrame(relay, frame(2)); // force-flushes -> the (failing, non-recoverable) turn -- nulls sessionId
+      await sendFrame(relay, frame(2)); // force-flushes -> the (failing, non-recoverable) turn -- sets `terminated`
 
+      expect(closeSpy).toHaveBeenCalledTimes(1);
+      expect(closeSpy).toHaveBeenCalledWith(4004, 'SESSION_NOT_FOUND');
       const sentLengthAfterBackendError = sent.length;
       await vi.advanceTimersByTimeAsync(3000);
 
-      expect(closeSpy).not.toHaveBeenCalled(); // no redundant close from the hello-timer path
+      expect(closeSpy).toHaveBeenCalledTimes(1); // still just the one close -- no redundant close from the hello-timer path
       expect(sent.length).toBe(sentLengthAfterBackendError); // no second ERROR appended
     });
 

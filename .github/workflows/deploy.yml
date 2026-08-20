@@ -175,8 +175,8 @@ jobs:
             [ "$S" = "200" ] && echo "✅ Vita gateway is up (dev)" && exit 0
             sleep 10
           done
-          echo "⚠️ Health check inconclusive — check: docker compose -f ~/vita-deploy/docker-compose.prod.yml logs"
-          exit 0
+          echo "❌ Health check failed after 5 attempts — check: docker compose -f ~/vita-deploy/docker-compose.prod.yml logs"
+          exit 1
 
   # ─────────────────────────────────────────────────────────────────────────
   deploy-prod:
@@ -256,5 +256,5 @@ jobs:
             [ "$S" = "200" ] && echo "✅ Vita gateway is up (prod)" && exit 0
             sleep 10
           done
-          echo "⚠️ Health check inconclusive — check: docker compose -f ~/vita-deploy/docker-compose.prod.yml logs"
-          exit 0
+          echo "❌ Health check failed after 5 attempts — check: docker compose -f ~/vita-deploy/docker-compose.prod.yml logs"
+          exit 1

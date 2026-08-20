@@ -59,4 +59,27 @@ describe('AudioPreprocessClient', () => {
 
     await expect(client.teardown('sess-1')).rejects.toThrow(/500/);
   });
+
+  it('process() and teardown() both attach an AbortSignal so a hung audio-preprocess instance can never stall a call indefinitely', async () => {
+    const fetchImpl = fakeFetch();
+    const client = new AudioPreprocessClient('http://audio-preprocess:8090', fetchImpl);
+
+    await client.process(new Uint8Array([1]), 'sess-1');
+    await client.teardown('sess-1');
+
+    const calls = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls;
+    expect((calls[0][1] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+    expect((calls[1][1] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('process() rejects once the configured timeout elapses instead of hanging forever', async () => {
+    const hungFetch = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(new Error('The operation was aborted')));
+      });
+    }) as unknown as typeof fetch;
+    const client = new AudioPreprocessClient('http://audio-preprocess:8090', hungFetch, 5);
+
+    await expect(client.process(new Uint8Array([1]), 'sess-1')).rejects.toThrow();
+  });
 });

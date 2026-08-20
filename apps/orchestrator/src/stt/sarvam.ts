@@ -24,6 +24,10 @@ export class SarvamSttProvider implements SttProvider {
     private apiKey: string,
     private sttEndpoint: string,
     private fetchImpl: typeof fetch = fetch,
+    // Bounds one batch transcription call -- previously unbounded, so a hung/slow Sarvam
+    // connection could freeze a live call indefinitely. Generous versus a real call's
+    // normal latency (transcribing up to a ~20s utterance), still bounded overall.
+    private timeoutMs = Number(process.env.SARVAM_STT_REQUEST_TIMEOUT_MS ?? 10_000),
   ) {}
 
   async transcribe(audioPcm16: Uint8Array, languageCode: string = DEFAULT_LANGUAGE_CODE): Promise<TranscribeResult> {
@@ -39,6 +43,7 @@ export class SarvamSttProvider implements SttProvider {
       method: 'POST',
       headers: { 'API-Subscription-Key': this.apiKey },
       body: form,
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
 
     if (!res.ok) {

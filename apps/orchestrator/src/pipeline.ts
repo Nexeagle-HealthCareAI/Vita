@@ -99,6 +99,25 @@ export interface RunTurnResult {
 
 const MAX_TOOL_ROUNDS_FALLBACK_MESSAGE = "Sorry, I'm having trouble completing that right now. Could you repeat what you need?";
 
+/** Best-effort patient/appointment reference for the audit trail's patientRef field
+ * (audit.ts's AuditEvent) -- deliberately narrow (only the two tools that actually touch
+ * a specific patient/appointment record), not a generic "scan the result for anything
+ * id-shaped" approach. Without this, the durable audit log could record THAT a booking
+ * happened in some session but never WHICH patient/appointment it touched, defeating a
+ * core purpose of a DPDPA-alignment audit trail. Never throws -- an unrecognized tool or
+ * an unexpected result shape just yields no patientRef, same as before this existed. */
+function derivePatientRef(toolName: string, filledArgs: Record<string, unknown>, toolResult: unknown): string | undefined {
+  if (toolName === 'book_appointment') {
+    const r = toolResult as { patientId?: string | null; appointmentId?: string | null } | null;
+    return r?.patientId ?? r?.appointmentId ?? undefined;
+  }
+  if (toolName === 'mark_appointment_arrived') {
+    const appointmentId = filledArgs.appointmentId;
+    return typeof appointmentId === 'string' ? appointmentId : undefined;
+  }
+  return undefined;
+}
+
 /** Executes every tool call in `toolCalls` against `hms`/`faqRetriever`/
  * `hospitalReferenceRetriever`, RBAC-checked and audited, appending a role:'tool' history
  * entry per call -- shared by both the non-streaming and streaming paths below, which
@@ -185,6 +204,7 @@ async function runToolCalls(opts: {
         userId: session.userId,
         role: session.persona,
         action: `tool_call:${call.name}`,
+        patientRef: derivePatientRef(call.name, filledArgs, toolResult),
         outcome: 'success',
       });
       toolCallsExecuted.push(call.name);
@@ -305,9 +325,20 @@ export async function runTurn(opts: {
     }
 
     if (replyText === null) {
-      // Hit MAX_TOOL_ROUNDS without a final answer -- never hang a live call waiting on
-      // a model that keeps requesting tools indefinitely.
-      replyText = MAX_TOOL_ROUNDS_FALLBACK_MESSAGE;
+      // Hit MAX_TOOL_ROUNDS without a final text answer -- never hang a live call waiting
+      // on a model that keeps requesting tools indefinitely. Give it exactly one more,
+      // tool-less round (tools: [] forces a text-only reply, never another tool request)
+      // grounded in whatever tool results are already in history, instead of unconditionally
+      // overwriting them with a generic "sorry" message. This matters because the LAST
+      // round's tool call (the one that hit the cap) may well have already succeeded --
+      // e.g. a real book_appointment -- and the old unconditional fallback told the caller
+      // it failed anyway, risking a repeated (duplicate) booking on retry.
+      try {
+        const finalResult = await brain.chat(history, [], model);
+        replyText = finalResult.content?.trim() ? finalResult.content : MAX_TOOL_ROUNDS_FALLBACK_MESSAGE;
+      } catch {
+        replyText = MAX_TOOL_ROUNDS_FALLBACK_MESSAGE;
+      }
       history.push({ role: 'assistant', content: replyText });
     }
 
@@ -383,6 +414,8 @@ export async function runTurn(opts: {
     emitChunk({ text: audio.length > 0 ? text : '', audio, isFinal: true });
   }
 
+  let gotFinalAnswer = false;
+
   roundLoop: for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     if (isAborted?.()) break;
 
@@ -409,6 +442,7 @@ export async function runTurn(opts: {
 
     if (toolCalls.length === 0) {
       history.push({ role: 'assistant', content });
+      gotFinalAnswer = true;
       break;
     }
 
@@ -417,9 +451,33 @@ export async function runTurn(opts: {
       content: content || `[requested: ${toolCalls.map((t) => t.name).join(', ')}]`,
     });
     await runToolCalls({ toolCalls, session, hms, faqRetriever, hospitalReferenceRetriever, history, toolCallsExecuted, slots, touchedSlots });
+  }
 
-    if (round === MAX_TOOL_ROUNDS - 1) {
-      // Hit the cap without a final answer -- same fallback as the non-streaming path.
+  if (!gotFinalAnswer && !ttsFailure && !isAborted?.()) {
+    // Hit MAX_TOOL_ROUNDS while the model still wanted more tool calls -- same reasoning
+    // as the non-streaming path's identical fix: give it one final, tool-less round
+    // grounded in whatever tool results are already in history (e.g. a just-completed
+    // booking) instead of unconditionally speaking a generic "sorry" over a real outcome.
+    let finalContent = '';
+    let finalSentenceBuffer = '';
+    try {
+      for await (const streamChunk of brain.chatStream(history, [], model)) {
+        if (streamChunk.contentDelta) {
+          finalContent += streamChunk.contentDelta;
+          finalSentenceBuffer += streamChunk.contentDelta;
+          const { complete, remainder } = splitCompletedSentences(finalSentenceBuffer);
+          finalSentenceBuffer = remainder;
+          for (const sentence of complete) await enqueueSentence(sentence);
+        }
+      }
+    } catch {
+      // fall through -- speak whatever text (if any) arrived before the failure, or the
+      // generic fallback below if none did
+    }
+    if (finalContent.trim()) {
+      if (finalSentenceBuffer.trim()) await enqueueSentence(finalSentenceBuffer);
+      history.push({ role: 'assistant', content: finalContent });
+    } else {
       await enqueueSentence(MAX_TOOL_ROUNDS_FALLBACK_MESSAGE);
       history.push({ role: 'assistant', content: MAX_TOOL_ROUNDS_FALLBACK_MESSAGE });
     }

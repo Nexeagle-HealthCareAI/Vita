@@ -439,31 +439,41 @@ export function buildServer(
       const { id } = req.params as { id: string };
 
       void (async () => {
-        const session = await sessions.get(id);
-        if (!session) {
-          socket.close(4004, 'session not found');
-          return;
+        try {
+          const session = await sessions.get(id);
+          if (!session) {
+            socket.close(4004, 'session not found');
+            return;
+          }
+
+          const handler = new StreamSessionHandler(id, socket, {
+            sessions,
+            brain,
+            tts,
+            hms,
+            faqRetriever,
+            hospitalReferenceRetriever,
+            rosterTextPromise,
+            streamingSttSessionFactory,
+            connectionGate,
+            connectTimeoutMs: Number(process.env.SARVAM_CONNECT_TIMEOUT_MS ?? 1800),
+            gateMaxWaitMs: Number(process.env.SARVAM_CONNECT_GATE_MAX_WAIT_MS ?? 1000),
+            log: req.log,
+          });
+
+          socket.on('message', (data: Buffer, isBinary: boolean) => handler.handleMessage(data, isBinary));
+          socket.on('close', () => handler.onClose());
+
+          await handler.init();
+        } catch (err) {
+          // This whole block runs from a `void`-fired async IIFE with no caller awaiting
+          // it -- an uncaught rejection here (e.g. a genuine Redis error from sessions.get,
+          // not just a decode failure, which SessionStore.get() now handles itself) would
+          // otherwise crash the entire orchestrator process, dropping every other
+          // concurrent call on this instance, not just this one connection.
+          req.log.error({ err, sessionId: id }, 'streaming session bootstrap failed');
+          socket.close(1011, 'internal error');
         }
-
-        const handler = new StreamSessionHandler(id, socket, {
-          sessions,
-          brain,
-          tts,
-          hms,
-          faqRetriever,
-          hospitalReferenceRetriever,
-          rosterTextPromise,
-          streamingSttSessionFactory,
-          connectionGate,
-          connectTimeoutMs: Number(process.env.SARVAM_CONNECT_TIMEOUT_MS ?? 1800),
-          gateMaxWaitMs: Number(process.env.SARVAM_CONNECT_GATE_MAX_WAIT_MS ?? 1000),
-          log: req.log,
-        });
-
-        socket.on('message', (data: Buffer, isBinary: boolean) => handler.handleMessage(data, isBinary));
-        socket.on('close', () => handler.onClose());
-
-        await handler.init();
       })();
     });
   });
@@ -495,6 +505,22 @@ function computeFormFields(session: DialogueSession, result: RunTurnResult): Rec
 
 if (process.env.NODE_ENV !== 'test') {
   const app = buildServer();
+  if (!process.env.SESSION_ENCRYPTION_KEY) {
+    // Loud, deliberate startup-time visibility (not a hard refusal to start -- this
+    // environment's real SESSION_ENCRYPTION_KEY/HOSPITAL_ID state isn't something this
+    // change can safely assume, and a startup crash on a live service is a much larger
+    // blast radius than a warning). A session can carry a real, live forwarded staff
+    // bearer JWT (DialogueSession.hmsAccessToken, see session.ts) the moment any hospital
+    // staff member's ticket includes one -- there's no separate feature flag gating that,
+    // so an unset key here means that credential sits in plaintext in Redis for up to
+    // SESSION_TTL_SECONDS in EVERY environment, not just ones that opted into a specific
+    // feature. See .env.example's SESSION_ENCRYPTION_KEY comment.
+    app.log.warn(
+      'SESSION_ENCRYPTION_KEY is not set -- session data, including any forwarded staff bearer JWT, ' +
+        'is stored in PLAINTEXT in Redis for up to SESSION_TTL_SECONDS. Set SESSION_ENCRYPTION_KEY in ' +
+        'every environment where staff-auth tools (e.g. mark_appointment_arrived) may be used.',
+    );
+  }
   // Fire-and-forget: schema creation + the retention purge loop for the durable audit
   // store (docs/BUILD_GUIDE.md §6) -- a no-op if DATABASE_URL isn't configured, so this
   // never blocks/fails startup. Deliberately not called from buildServer() itself, which

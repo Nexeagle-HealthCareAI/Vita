@@ -90,8 +90,21 @@ export class SessionStore {
     const raw = vitaRaw ?? legacyRaw;
     if (!raw) return null;
     const key = getEncryptionKey();
-    const json = key ? decrypt(raw, key) : raw;
-    return JSON.parse(json) as DialogueSession;
+    try {
+      const json = key ? decrypt(raw, key) : raw;
+      return JSON.parse(json) as DialogueSession;
+    } catch (err) {
+      // A stored value that fails to decrypt/parse -- most commonly SESSION_ENCRYPTION_KEY
+      // being rotated while this session was still live, see getEncryptionKey()'s doc
+      // comment above -- previously threw straight out of get(). Every real caller awaits
+      // this on a live turn's hot path (index.ts, streamSession.ts) with no surrounding
+      // try/catch, so an unhandled rejection here would crash the whole orchestrator
+      // process, not just this one session. Treat it the same as "session not found"
+      // instead: every call site already handles that case safely, and it self-heals
+      // within SESSION_TTL_SECONDS exactly as that doc comment already promises.
+      console.error(JSON.stringify({ type: 'SESSION_DECODE_FAILED', sessionId, error: err instanceof Error ? err.message : String(err) }));
+      return null;
+    }
   }
 
   /** Reattach after a client reconnect using the resume token, so a WiFi blip doesn't

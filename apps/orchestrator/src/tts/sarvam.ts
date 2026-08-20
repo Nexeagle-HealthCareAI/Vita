@@ -16,6 +16,11 @@ export class SarvamTtsProvider implements TtsProvider {
     private apiKey: string,
     private ttsEndpoint: string,
     private fetchImpl: typeof fetch = fetch,
+    // Bounds one synthesis call (pipeline.ts calls this once per sentence on the
+    // streaming path) -- previously unbounded, so a hung/slow Sarvam connection could
+    // freeze a live call indefinitely. A single sentence should synthesize quickly; this
+    // stays generous versus that normal latency while still being bounded.
+    private timeoutMs = Number(process.env.SARVAM_TTS_REQUEST_TIMEOUT_MS ?? 8_000),
   ) {}
 
   async synthesize(text: string, languageCode: string = DEFAULT_LANGUAGE_CODE): Promise<Uint8Array> {
@@ -34,6 +39,7 @@ export class SarvamTtsProvider implements TtsProvider {
         // param name/values differ.
         speech_sample_rate: 16000,
       }),
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
 
     if (!res.ok) {

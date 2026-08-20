@@ -103,16 +103,15 @@ describe('gateway WS relay -- streaming-enabled call falls back to batch end to 
         // Unlike wsRelay.integration.test.ts's pure-batch happy path, relay.start() here
         // does a real socket round trip to the fake orchestrator stream server before
         // resolving (open -> close(1003) -> settle('unavailable')) -- so sessionId isn't
-        // set the instant the client's WS opens. Frames sent before that finishes would
-        // hit processFrame()'s (correct, pre-existing) "session not yet established" guard
-        // and be silently dropped, hanging this test. A short delay gives that same-host
-        // round trip time to finish first, matching how much slower start() genuinely is
-        // once streaming is attempted vs. the always-instant batch-only path.
-        setTimeout(() => {
-          for (let i = 0; i < 5; i++) {
-            ws!.send(encodeBinaryFrame(BinaryFrameType.AUDIO_INPUT_PCM16, new Uint8Array([i])));
-          }
-        }, 150);
+        // set the instant the client's WS opens. Sent with NO delay, deliberately -- this
+        // used to require an artificial setTimeout here because processFrame() dropped any
+        // frame that arrived before start() resolved; now it awaits start() instead (see
+        // relay.ts's sessionReady), so these frames are buffered-by-waiting and still
+        // processed once the real (streaming-fallback) session is established, proving
+        // that fix rather than working around the bug it fixed.
+        for (let i = 0; i < 5; i++) {
+          ws!.send(encodeBinaryFrame(BinaryFrameType.AUDIO_INPUT_PCM16, new Uint8Array([i])));
+        }
       });
 
       ws.on('message', (data: Buffer, isBinary: boolean) => {

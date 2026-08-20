@@ -107,6 +107,15 @@ describe('GroqBrainProvider', () => {
     expect(fetchImpl).toHaveBeenCalledWith('http://localhost:9999/groq/chat/completions', expect.any(Object));
   });
 
+  it('attaches an AbortSignal so a hung Groq connection can never freeze a call indefinitely', async () => {
+    const fetchImpl = fakeFetch({ choices: [{ message: { content: 'ok' } }] });
+    const client = new GroqBrainProvider('key', fetchImpl);
+    await client.chat([{ role: 'user', content: 'hi' }], [], 'llama-3.1-8b-instant');
+
+    const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect((init as RequestInit).signal).toBeInstanceOf(AbortSignal);
+  });
+
   describe('chatStream', () => {
     it('yields content deltas as they arrive, then a final done:true chunk with no toolCalls', async () => {
       const fetchImpl = fakeStreamFetch([

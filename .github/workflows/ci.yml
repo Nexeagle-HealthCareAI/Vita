@@ -86,6 +86,10 @@ jobs:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     needs: node
+    # A hung `playwright install` (CDN flakiness / apt lock contention) previously had no
+    # bound here and could burn GitHub's full 360-minute default job timeout in silence --
+    # this converts that into a fast, visible failure instead.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -99,7 +103,24 @@ jobs:
       # which is what normally handles that ordering.
       - run: pnpm --filter @vita/protocol build
       - run: pnpm --filter @vita/web-sdk build
-      - run: pnpm --filter @vita/web-demo exec playwright install --with-deps chromium
+      # Playwright's browser binaries live outside pnpm's own store (setup-node's
+      # cache: pnpm doesn't cover this) -- cache them keyed on the lockfile hash (which
+      # changes whenever @playwright/test's resolved version does) so a normal run reuses
+      # the prior download instead of re-fetching Chromium from scratch every time, one of
+      # the two real contributors (alongside apt lock contention) to this job's recurring
+      # hangs. OS-level deps (--with-deps) still install on every run regardless of this
+      # cache -- GitHub-hosted runners are fresh VMs with nothing at the apt layer to reuse.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
+      - name: Install Playwright (chromium + OS deps), retrying once on failure
+        run: |
+          for i in 1 2; do
+            if pnpm --filter @vita/web-demo exec playwright install --with-deps chromium; then exit 0; fi
+            echo "playwright install attempt $i failed, retrying..."
+          done
+          exit 1
       - run: pnpm --filter @vita/web-demo test
 
   # Real, live easyHMSAPI contract test (packages/mcp-1hms/test/hmsClient.contract.test.ts)

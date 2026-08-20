@@ -36,4 +36,13 @@ describe('SarvamTtsProvider', () => {
     const client = new SarvamTtsProvider('key', TTS_URL, fetchImpl);
     await expect(client.synthesize('hi')).rejects.toThrow(/422/);
   });
+
+  it('attaches an AbortSignal so a hung Sarvam connection can never freeze a call indefinitely', async () => {
+    const fetchImpl = fakeFetch({ audios: [Buffer.from([1]).toString('base64')] });
+    const client = new SarvamTtsProvider('key', TTS_URL, fetchImpl);
+    await client.synthesize('hi');
+
+    const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect((init as RequestInit).signal).toBeInstanceOf(AbortSignal);
+  });
 });
