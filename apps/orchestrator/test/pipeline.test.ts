@@ -106,7 +106,7 @@ describe('runTurn — scripted conversation (golden-fixture style, per docs/BUIL
     const auditSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     const result = await runTurn({
-      session: baseSession({ role: 'ROLE_DOCTOR' }),
+      session: baseSession({ persona: 'ROLE_DOCTOR', permissions: ['doc_board'] }),
       transcript: 'Book a new appointment for x',
       brain,
       tts,
@@ -123,17 +123,35 @@ describe('runTurn — scripted conversation (golden-fixture style, per docs/BUIL
     expect(result.replyText).toContain("not able to do that");
   });
 
-  it('selects GROQ_MODEL_DOCTOR for a doctor session and GROQ_MODEL_ADMIN for a receptionist session', async () => {
+  it('selects GROQ_MODEL_DOCTOR for a doc_board session and GROQ_MODEL_ADMIN for a plain receptionist session', async () => {
     process.env.GROQ_MODEL_DOCTOR = 'test-doctor-model';
     process.env.GROQ_MODEL_ADMIN = 'test-admin-model';
 
     const brain = mockGroq([{ content: 'ok', toolCalls: [] }]);
-    await runTurn({ session: baseSession({ role: 'ROLE_DOCTOR' }), transcript: 'hi', brain, tts: mockTts(), hms: mockHms() });
+    await runTurn({ session: baseSession({ persona: 'ROLE_DOCTOR', permissions: ['doc_board'] }), transcript: 'hi', brain, tts: mockTts(), hms: mockHms() });
     expect((brain.chat as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe('test-doctor-model');
 
     const brain2 = mockGroq([{ content: 'ok', toolCalls: [] }]);
-    await runTurn({ session: baseSession({ role: 'ROLE_RECEPTIONIST' }), transcript: 'hi', brain: brain2, tts: mockTts(), hms: mockHms() });
+    await runTurn({ session: baseSession({ persona: 'ROLE_RECEPTIONIST', permissions: ['appointment_scheduler'] }), transcript: 'hi', brain: brain2, tts: mockTts(), hms: mockHms() });
     expect((brain2.chat as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe('test-admin-model');
+
+    delete process.env.GROQ_MODEL_DOCTOR;
+    delete process.env.GROQ_MODEL_ADMIN;
+  });
+
+  it('also selects GROQ_MODEL_DOCTOR for a session holding ipd (IPD/Admission work board access), even without doc_board', async () => {
+    process.env.GROQ_MODEL_DOCTOR = 'test-doctor-model';
+    process.env.GROQ_MODEL_ADMIN = 'test-admin-model';
+
+    const brain = mockGroq([{ content: 'ok', toolCalls: [] }]);
+    await runTurn({
+      session: baseSession({ persona: 'ROLE_RECEPTIONIST', permissions: ['appointment_scheduler', 'ipd'] }),
+      transcript: 'hi',
+      brain,
+      tts: mockTts(),
+      hms: mockHms(),
+    });
+    expect((brain.chat as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe('test-doctor-model');
 
     delete process.env.GROQ_MODEL_DOCTOR;
     delete process.env.GROQ_MODEL_ADMIN;
@@ -141,24 +159,24 @@ describe('runTurn — scripted conversation (golden-fixture style, per docs/BUIL
 
   it('upfront RBAC: a doctor session is never even offered book_appointment; a receptionist session is', async () => {
     const brain = mockGroq([{ content: 'ok', toolCalls: [] }]);
-    await runTurn({ session: baseSession({ role: 'ROLE_DOCTOR' }), transcript: 'hi', brain, tts: mockTts(), hms: mockHms() });
+    await runTurn({ session: baseSession({ persona: 'ROLE_DOCTOR', permissions: ['doc_board'] }), transcript: 'hi', brain, tts: mockTts(), hms: mockHms() });
     const doctorTools = (brain.chat as ReturnType<typeof vi.fn>).mock.calls[0][1] as { function: { name: string } }[];
     expect(doctorTools.map((t) => t.function.name)).not.toContain('book_appointment');
 
     const brain2 = mockGroq([{ content: 'ok', toolCalls: [] }]);
-    await runTurn({ session: baseSession({ role: 'ROLE_RECEPTIONIST' }), transcript: 'hi', brain: brain2, tts: mockTts(), hms: mockHms() });
+    await runTurn({ session: baseSession({ persona: 'ROLE_RECEPTIONIST', permissions: ['appointment_scheduler'] }), transcript: 'hi', brain: brain2, tts: mockTts(), hms: mockHms() });
     const receptionistTools = (brain2.chat as ReturnType<typeof vi.fn>).mock.calls[0][1] as { function: { name: string } }[];
     expect(receptionistTools.map((t) => t.function.name)).toContain('book_appointment');
   });
 
   it("upfront RBAC: a doctor session's system prompt never mentions book_appointment; a receptionist session's does", async () => {
     const brain = mockGroq([{ content: 'ok', toolCalls: [] }]);
-    const result = await runTurn({ session: baseSession({ role: 'ROLE_DOCTOR' }), transcript: 'hi', brain, tts: mockTts(), hms: mockHms() });
+    const result = await runTurn({ session: baseSession({ persona: 'ROLE_DOCTOR', permissions: ['doc_board'] }), transcript: 'hi', brain, tts: mockTts(), hms: mockHms() });
     expect(result.updatedHistory[0]).toEqual(expect.objectContaining({ role: 'system' }));
     expect((result.updatedHistory[0]!.content as string)).not.toContain('book_appointment');
 
     const brain2 = mockGroq([{ content: 'ok', toolCalls: [] }]);
-    const result2 = await runTurn({ session: baseSession({ role: 'ROLE_RECEPTIONIST' }), transcript: 'hi', brain: brain2, tts: mockTts(), hms: mockHms() });
+    const result2 = await runTurn({ session: baseSession({ persona: 'ROLE_RECEPTIONIST', permissions: ['appointment_scheduler'] }), transcript: 'hi', brain: brain2, tts: mockTts(), hms: mockHms() });
     expect(result2.updatedHistory[0]!.content).toContain('book_appointment');
   });
 });

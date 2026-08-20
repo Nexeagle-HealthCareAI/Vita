@@ -7,6 +7,7 @@ import type { BrainProvider } from './brain/types.js';
 import type { StreamingSttSession } from './stt/types.js';
 import type { TtsProvider } from './tts/types.js';
 import { runTurn } from './pipeline.js';
+import { isToolAllowed } from './rbac.js';
 import { recordAuditEvent } from './audit.js';
 import type { ConnectionOpenGate } from './connectionGate.js';
 
@@ -27,9 +28,9 @@ type OrchestratorStreamMessage =
   | { event: 'turn.reply'; text: string; final: boolean }
   /** Sent at most once per turn, and only when something actually changed -- see
    * pipeline.ts's slot-tracking (slots.ts) and this file's handleFinalTranscript(). Only
-   * ever sent for a ROLE_RECEPTIONIST session (role-gated in handleFinalTranscript, the
-   * authoritative check -- see index.ts's computeFormFields for the HTTP-route twin of
-   * this same gate). */
+   * ever sent for a session holding the real book_appointment permission (gated in
+   * handleFinalTranscript via isToolAllowed, the authoritative check -- see index.ts's
+   * computeFormFields for the HTTP-route twin of this same gate). */
   | { event: 'turn.form_autofill'; data: Record<string, unknown> }
   | { event: 'turn.error'; code: string; message: string; recoverable: boolean };
 
@@ -141,7 +142,7 @@ export class StreamSessionHandler {
         ts: Date.now(),
         sessionId: session.sessionId,
         userId: session.userId,
-        role: session.role,
+        role: session.persona,
         action: 'stt_empty',
         outcome: 'success',
       });
@@ -181,7 +182,7 @@ export class StreamSessionHandler {
         ts: Date.now(),
         sessionId: session.sessionId,
         userId: session.userId,
-        role: session.role,
+        role: session.persona,
         action: 'turn',
         outcome: 'error',
       });
@@ -198,12 +199,13 @@ export class StreamSessionHandler {
     // cut the reply short -- runTurn already guarantees history/replyText/audio reflect
     // only what was truly spoken, never more. The chunks themselves were already sent
     // live via onReplyChunk above; only the error (if any) still needs surfacing.
-    // Role-gated HERE, orchestrator-side, as the authoritative check -- see index.ts's
-    // computeFormFields doc comment for why (a ROLE_DOCTOR session never sends/audits a
-    // push at all, rather than relying on a downstream gate to drop it silently).
-    // result.formFieldsThisTurn is pipeline.ts's own high-water-mark diff -- see
-    // RunTurnResult's doc comment for why it's not simply session.slots vs. updatedSlots.
-    const formFields = session.role === 'ROLE_RECEPTIONIST' ? result.formFieldsThisTurn : {};
+    // Gated HERE, orchestrator-side, as the authoritative check -- see index.ts's
+    // computeFormFields doc comment for why this checks the real permission
+    // (isToolAllowed('book_appointment', ...)), never persona, and why a session without
+    // it never sends/audits a push at all rather than relying on a downstream gate to drop
+    // it silently. result.formFieldsThisTurn is pipeline.ts's own high-water-mark diff --
+    // see RunTurnResult's doc comment for why it's not simply session.slots vs. updatedSlots.
+    const formFields = isToolAllowed('book_appointment', session.permissions) ? result.formFieldsThisTurn : {};
     await this.deps.sessions.update(session.sessionId, { history: result.updatedHistory, slots: result.updatedSlots, turnState: 'IDLE' });
     if (Object.keys(formFields).length > 0) {
       this.sendJson({ event: 'turn.form_autofill', data: formFields });
@@ -211,7 +213,7 @@ export class StreamSessionHandler {
         ts: Date.now(),
         sessionId: session.sessionId,
         userId: session.userId,
-        role: session.role,
+        role: session.persona,
         action: 'form_autofill_push',
         outcome: 'success',
       });

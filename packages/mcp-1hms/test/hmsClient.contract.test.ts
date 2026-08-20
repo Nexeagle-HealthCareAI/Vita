@@ -38,17 +38,17 @@ const staffContractConfigured = Boolean(
   STAFF_LOGIN && STAFF_PASSWORD && STAFF_TEST_APPOINTMENT_ID && STAFF_TEST_DOCTOR_ID && STAFF_TEST_HOSPITAL_ID,
 );
 
-async function loginForContractTest(): Promise<string> {
+async function loginForContractTest(): Promise<{ accessToken: string; userId: string }> {
   const res = await fetch(`${BASE_URL}/auth/user/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ emailOrPhone: STAFF_LOGIN, password: STAFF_PASSWORD, isLoginWithOtp: false }),
   });
-  const data = (await res.json()) as { success: boolean; message: string | null; accessToken: string | null };
-  if (!res.ok || !data.success || !data.accessToken) {
+  const data = (await res.json()) as { success: boolean; message: string | null; accessToken: string | null; userId: string | null };
+  if (!res.ok || !data.success || !data.accessToken || !data.userId) {
     throw new Error(`contract-test staff login failed: ${data.message ?? res.status}`);
   }
-  return data.accessToken;
+  return { accessToken: data.accessToken, userId: data.userId };
 }
 
 // Obviously-fake, greppable patient identity for the one real write this file performs
@@ -158,7 +158,7 @@ describe('HmsClient contract (real easyHMSAPI)', () => {
     'markAppointmentArrived returns the real /queue/{doctorId}/mark-arrived shape (staff-auth, real forwarded JWT) -- idempotent, safe to re-run',
     async () => {
       const client = new HmsClient(BASE_URL, API_KEY);
-      const accessToken = await loginForContractTest();
+      const { accessToken } = await loginForContractTest();
 
       const result = await client.markAppointmentArrived(
         { appointmentId: STAFF_TEST_APPOINTMENT_ID!, doctorId: STAFF_TEST_DOCTOR_ID! },
@@ -169,6 +169,20 @@ describe('HmsClient contract (real easyHMSAPI)', () => {
       expect('message' in result).toBe(true);
       expect('tokenNo' in result).toBe(true);
       expect('status' in result).toBe(true);
+    },
+    30_000,
+  );
+
+  it.skipIf(!STAFF_LOGIN || !STAFF_PASSWORD)(
+    'getUserPermissions returns the real /user/permissions shape for a genuine self-lookup',
+    async () => {
+      const client = new HmsClient(BASE_URL, API_KEY);
+      const { accessToken, userId } = await loginForContractTest();
+
+      const result = await client.getUserPermissions(userId, accessToken);
+
+      expect(Array.isArray(result.permissionKeys)).toBe(true);
+      expect('hospitalId' in result).toBe(true);
     },
     30_000,
   );

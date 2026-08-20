@@ -8,7 +8,7 @@ async function createSession(app: ReturnType<typeof buildServer>, overrides: Rec
   const res = await app.inject({
     method: 'POST',
     url: '/session',
-    payload: { sessionId: 'sess-1', userId: 'user-1', role: 'ROLE_RECEPTIONIST', consentGiven: true, ...overrides },
+    payload: { sessionId: 'sess-1', userId: 'user-1', consentGiven: true, hmsAccessToken: 'test-staff-token', ...overrides },
   });
   return JSON.parse(res.body) as { sessionId: string };
 }

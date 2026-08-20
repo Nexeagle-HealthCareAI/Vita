@@ -9,7 +9,8 @@ describe('SessionStore (backed by ioredis-mock)', () => {
     const created = await store.create({
       sessionId: 's1',
       userId: 'u1',
-      role: 'ROLE_RECEPTIONIST',
+      persona: 'ROLE_RECEPTIONIST',
+      permissions: [],
       turnState: 'IDLE',
       slots: {},
       history: [],
@@ -33,7 +34,8 @@ describe('SessionStore (backed by ioredis-mock)', () => {
     await store.create({
       sessionId: 's1b',
       userId: 'u1',
-      role: 'ROLE_RECEPTIONIST',
+      persona: 'ROLE_RECEPTIONIST',
+      permissions: [],
       turnState: 'IDLE',
       slots: {},
       history: [],
@@ -56,7 +58,8 @@ describe('SessionStore (backed by ioredis-mock)', () => {
     await store.create({
       sessionId: 's2',
       userId: 'u2',
-      role: 'ROLE_DOCTOR',
+      persona: 'ROLE_DOCTOR',
+      permissions: ['doc_board'],
       turnState: 'IDLE',
       slots: {},
       history: [],
@@ -76,7 +79,8 @@ describe('SessionStore (backed by ioredis-mock)', () => {
     await store.create({
       sessionId: 's3',
       userId: 'u3',
-      role: 'ROLE_RECEPTIONIST',
+      persona: 'ROLE_RECEPTIONIST',
+      permissions: [],
       turnState: 'IDLE',
       slots: {},
       history: [],
@@ -97,7 +101,8 @@ describe('SessionStore (backed by ioredis-mock)', () => {
     await store.create({
       sessionId: 's4',
       userId: 'u4',
-      role: 'ROLE_RECEPTIONIST',
+      persona: 'ROLE_RECEPTIONIST',
+      permissions: [],
       turnState: 'IDLE',
       slots: {},
       history: [],
@@ -125,7 +130,7 @@ describe('SessionStore (backed by ioredis-mock)', () => {
       JSON.stringify({
         sessionId: 'legacy',
         userId: 'u-legacy',
-        role: 'ROLE_RECEPTIONIST',
+        role: 'ROLE_RECEPTIONIST', // genuinely old shape -- pre-persona/permissions rename
         turnState: 'IDLE',
         slots: {},
         resumeToken: 'legacy-token',
@@ -148,7 +153,8 @@ describe('SessionStore encryption at rest (SESSION_ENCRYPTION_KEY, docs/BUILD_GU
     await store.create({
       sessionId: 'plain-1',
       userId: 'u-plain',
-      role: 'ROLE_RECEPTIONIST',
+      persona: 'ROLE_RECEPTIONIST',
+      permissions: [],
       turnState: 'IDLE',
       slots: {},
       history: [],
@@ -167,7 +173,8 @@ describe('SessionStore encryption at rest (SESSION_ENCRYPTION_KEY, docs/BUILD_GU
     await store.create({
       sessionId: 'enc-1',
       userId: 'u-secret',
-      role: 'ROLE_RECEPTIONIST',
+      persona: 'ROLE_RECEPTIONIST',
+      permissions: [],
       turnState: 'IDLE',
       slots: { patient_name: 'Asha Verma' },
       history: [],

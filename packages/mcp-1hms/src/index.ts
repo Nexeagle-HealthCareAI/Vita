@@ -19,6 +19,7 @@ export type {
   MarkAppointmentArrivedInput,
   MarkAppointmentArrivedResult,
   StaffAuthContext,
+  UserPermissionsResult,
 } from './hmsClient.js';
 // StaffAuthContext (see hmsClient.ts's file header) is NOT wired into buildMcpServer below:
 // that stdio MCP surface has no RBAC/audit layer at all (its 3 existing tools all call the

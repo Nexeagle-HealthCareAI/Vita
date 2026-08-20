@@ -54,7 +54,7 @@ describe('gateway HTTP surface', () => {
 
     it('the real POST /session/ticket response also carries the CORS header, not just the preflight', async () => {
       const app = buildServer();
-      const token = jwt.sign({ sub: 'user-1', role: 'ROLE_RECEPTIONIST' }, JWT_SECRET);
+      const token = jwt.sign({ sub: 'user-1' }, JWT_SECRET);
       const res = await app.inject({
         method: 'POST',
         url: '/session/ticket',
@@ -73,7 +73,7 @@ describe('gateway HTTP surface', () => {
 
     it('a resumeSessionId/resumeToken body round-trips into the issued ticket, opaquely', async () => {
       const app = buildServer();
-      const token = jwt.sign({ sub: 'user-1', role: 'ROLE_RECEPTIONIST' }, JWT_SECRET);
+      const token = jwt.sign({ sub: 'user-1' }, JWT_SECRET);
       const res = await app.inject({
         method: 'POST',
         url: '/session/ticket',
@@ -88,7 +88,7 @@ describe('gateway HTTP surface', () => {
     it('SESSION_RESUME_ENABLED=false drops the resume pair even when the client sends it', async () => {
       process.env.SESSION_RESUME_ENABLED = 'false';
       const app = buildServer();
-      const token = jwt.sign({ sub: 'user-1', role: 'ROLE_RECEPTIONIST' }, JWT_SECRET);
+      const token = jwt.sign({ sub: 'user-1' }, JWT_SECRET);
       const res = await app.inject({
         method: 'POST',
         url: '/session/ticket',
@@ -102,7 +102,7 @@ describe('gateway HTTP surface', () => {
 
     it('a fresh session (no resume fields in the body) issues a ticket with a null resumeIntent', async () => {
       const app = buildServer();
-      const token = jwt.sign({ sub: 'user-1', role: 'ROLE_RECEPTIONIST' }, JWT_SECRET);
+      const token = jwt.sign({ sub: 'user-1' }, JWT_SECRET);
       const res = await app.inject({
         method: 'POST',
         url: '/session/ticket',
@@ -117,7 +117,7 @@ describe('gateway HTTP surface', () => {
   it('a JWT carrying hospitalId/hmsAccessToken (real-staff-JWT forwarding) reaches redeemTicket()\'s claims end-to-end', async () => {
     const app = buildServer();
     const token = jwt.sign(
-      { sub: 'user-1', role: 'ROLE_RECEPTIONIST', hospitalId: 'h-1', hmsAccessToken: 'real-staff-jwt' },
+      { sub: 'user-1', hospitalId: 'h-1', hmsAccessToken: 'real-staff-jwt' },
       JWT_SECRET,
     );
     const res = await app.inject({
@@ -129,7 +129,6 @@ describe('gateway HTTP surface', () => {
     const { ticket } = res.json() as { ticket: string };
     expect(redeemTicket(ticket)?.claims).toEqual({
       sub: 'user-1',
-      role: 'ROLE_RECEPTIONIST',
       hospitalId: 'h-1',
       hmsAccessToken: 'real-staff-jwt',
     });

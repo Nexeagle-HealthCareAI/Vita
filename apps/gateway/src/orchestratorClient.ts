@@ -1,7 +1,6 @@
 export interface CreateSessionInput {
   sessionId: string;
   userId: string;
-  role: 'ROLE_RECEPTIONIST' | 'ROLE_DOCTOR';
   consentGiven: boolean;
   /** Forwarded from ticket.ts's SessionClaims -- see that file's doc comment. */
   hospitalId?: string;

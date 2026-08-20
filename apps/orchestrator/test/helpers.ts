@@ -69,6 +69,13 @@ export function mockHms() {
   // rosterText cases override this directly, same pattern as findDoctors above.
   hms.getHospitalRoster = vi.fn().mockResolvedValue({ doctors: [] });
   hms.markAppointmentArrived = vi.fn().mockResolvedValue({ success: true, message: null, tokenNo: 1, status: 'READY' });
+  // Default grants exactly what the old role: 'ROLE_RECEPTIONIST' default effectively
+  // allowed (matches baseSession()'s own default reasoning below) -- only exercised by
+  // tests that go through the real POST /session route with an hmsAccessToken in the
+  // payload (see audioTurn.test.ts/streamSession.integration.test.ts's createSession()
+  // helpers); tests that build a DialogueSession directly via baseSession() never call
+  // this at all.
+  hms.getUserPermissions = vi.fn().mockResolvedValue({ permissionKeys: ['appointment_scheduler'], hospitalId: 'h-1' });
   return hms;
 }
 
@@ -78,11 +85,16 @@ export function mockRetriever(results: HybridSearchResult[] = []) {
   return retriever;
 }
 
+/** Default `permissions` grants exactly what the old `role: 'ROLE_RECEPTIONIST'` default
+ * effectively allowed (book_appointment, mark_appointment_arrived, plus every anyOf: []
+ * tool) -- see rbac.ts's TOOL_PERMISSIONS. Override `persona`/`permissions` together for a
+ * doctor-shaped session (e.g. `{ persona: 'ROLE_DOCTOR', permissions: ['doc_board'] }`). */
 export function baseSession(overrides: Partial<DialogueSession> = {}): DialogueSession {
   return {
     sessionId: 'sess-1',
     userId: 'user-1',
-    role: 'ROLE_RECEPTIONIST',
+    persona: 'ROLE_RECEPTIONIST',
+    permissions: ['appointment_scheduler'],
     turnState: 'IDLE',
     slots: {},
     history: [],

@@ -12,7 +12,8 @@ import {
   referenceEmbedText,
 } from '@vita/rag';
 import { SessionStore, type DialogueSession } from './session.js';
-import { assertToolPermission, ForbiddenError, type Role } from './rbac.js';
+import { assertToolPermission, ForbiddenError, isToolAllowed, derivePersona } from './rbac.js';
+import { resolveSessionPermissions } from './permissions.js';
 import { recordAuditEvent, initAuditStore } from './audit.js';
 import { GroqBrainProvider } from './brain/groq.js';
 import type { BrainProvider } from './brain/types.js';
@@ -163,14 +164,22 @@ export function buildServer(
     const body = req.body as {
       sessionId: string;
       userId: string;
-      role: Role;
       consentGiven?: boolean;
       /** Forwarded from the calling staff member's own easyHMSWeb session (see
        * apps/gateway/src/ticket.ts's SessionClaims) -- both optional, see
-       * session.ts's DialogueSession doc comment for what an absent pair means. */
+       * session.ts's DialogueSession doc comment for what an absent pair means. No `role`
+       * field anymore -- persona is derived server-side from real resolved permissions
+       * (see rbac.ts's Persona doc comment), never trusted from the client. */
       hospitalId?: string;
       hmsAccessToken?: string;
     };
+    // Resolved before the consent check so both audit lines below can carry a real
+    // persona -- this is pure data resolution (GET user/permissions), not itself an
+    // authorization decision, so doing it ahead of the consent gate is harmless (see
+    // permissions.ts's own fail-clean contract: never throws, resolves to [] on any
+    // failure, including a missing hmsAccessToken).
+    const { permissions } = await resolveSessionPermissions(hms, body.userId, body.hmsAccessToken);
+    const persona = derivePersona(permissions);
     // The one authoritative choke point for the DPDPA consent gate (docs/BUILD_GUIDE.md
     // §6) -- everything upstream (web-sdk, gateway ticket/relay) is a passthrough. A
     // resumed session never re-proves consent here since /session/:id/resume is a
@@ -180,7 +189,7 @@ export function buildServer(
         ts: Date.now(),
         sessionId: body.sessionId,
         userId: body.userId,
-        role: body.role,
+        role: persona,
         action: 'consent_missing',
         outcome: 'denied',
       });
@@ -190,14 +199,15 @@ export function buildServer(
       ts: Date.now(),
       sessionId: body.sessionId,
       userId: body.userId,
-      role: body.role,
+      role: persona,
       action: 'consent_given',
       outcome: 'success',
     });
     const session = await sessions.create({
       sessionId: body.sessionId,
       userId: body.userId,
-      role: body.role,
+      persona,
+      permissions,
       turnState: 'IDLE',
       slots: {},
       history: [],
@@ -209,7 +219,7 @@ export function buildServer(
       ts: Date.now(),
       sessionId: session.sessionId,
       userId: session.userId,
-      role: session.role,
+      role: session.persona,
       action: 'session_created',
       outcome: 'success',
     });
@@ -237,7 +247,7 @@ export function buildServer(
         ts: Date.now(),
         sessionId: id,
         userId: body.userId,
-        role: resumed?.role ?? 'ROLE_RECEPTIONIST',
+        role: resumed?.persona ?? 'ROLE_RECEPTIONIST',
         action: 'session_resume',
         outcome: 'denied',
       });
@@ -255,7 +265,7 @@ export function buildServer(
       ts: Date.now(),
       sessionId: id,
       userId: rotated.userId,
-      role: rotated.role,
+      role: rotated.persona,
       action: 'session_resume',
       outcome: 'success',
     });
@@ -270,14 +280,14 @@ export function buildServer(
     if (!session) return reply.code(404).send({ error: 'session not found' });
 
     try {
-      assertToolPermission(tool, session.role);
+      assertToolPermission(tool, session.permissions);
     } catch (err) {
       if (err instanceof ForbiddenError) {
         recordAuditEvent({
           ts: Date.now(),
           sessionId: id,
           userId: session.userId,
-          role: session.role,
+          role: session.persona,
           action: `tool_call:${tool}`,
           outcome: 'denied',
         });
@@ -290,7 +300,7 @@ export function buildServer(
       ts: Date.now(),
       sessionId: id,
       userId: session.userId,
-      role: session.role,
+      role: session.persona,
       action: `tool_call:${tool}`,
       outcome: 'success',
     });
@@ -325,7 +335,7 @@ export function buildServer(
         ts: Date.now(),
         sessionId: session.sessionId,
         userId: session.userId,
-        role: session.role,
+        role: session.persona,
         action: 'form_autofill_push',
         outcome: 'success',
       });
@@ -360,7 +370,7 @@ export function buildServer(
         ts: Date.now(),
         sessionId: id,
         userId: session.userId,
-        role: session.role,
+        role: session.persona,
         action: 'stt',
         outcome: 'error',
       });
@@ -376,7 +386,7 @@ export function buildServer(
         ts: Date.now(),
         sessionId: id,
         userId: session.userId,
-        role: session.role,
+        role: session.persona,
         action: 'stt_empty',
         outcome: 'success',
       });
@@ -391,7 +401,7 @@ export function buildServer(
         ts: Date.now(),
         sessionId: id,
         userId: session.userId,
-        role: session.role,
+        role: session.persona,
         action: 'turn',
         outcome: 'error',
       });
@@ -405,7 +415,7 @@ export function buildServer(
         ts: Date.now(),
         sessionId: session.sessionId,
         userId: session.userId,
-        role: session.role,
+        role: session.persona,
         action: 'form_autofill_push',
         outcome: 'success',
       });
@@ -466,16 +476,21 @@ function errMessage(err: unknown): string {
 }
 
 /** Which of this turn's slot changes (if any) are worth pushing to the client as
- * UI_FORM_AUTOFILL -- role-gated HERE, orchestrator-side, as the authoritative check
- * (every other authorization decision in this codebase, assertToolPermission, already
- * lives orchestrator-side too). A ROLE_DOCTOR session never sends/audits a push at all --
- * gating only downstream (the gateway's relay.ts, or web-sdk's client-side check) would
- * mean an audit record claims a push happened that was silently dropped, and would ship
- * PII-shaped data over the internal WS for no reason. (result.formFieldsThisTurn is
- * pipeline.ts's own high-water-mark diff -- see RunTurnResult's doc comment for why it's
- * not simply session.slots vs. result.updatedSlots.) */
+ * UI_FORM_AUTOFILL -- gated HERE, orchestrator-side, as the authoritative check (every
+ * other authorization decision in this codebase, assertToolPermission, already lives
+ * orchestrator-side too). Gated on the REAL permission that governs booking
+ * (isToolAllowed('book_appointment', ...)), never on persona -- persona is a cosmetic
+ * UX bucket (see rbac.ts's Persona doc comment) that would otherwise let a Nurse,
+ * Accountant, or any hospital's custom role without doc_board fall into the "receptionist"
+ * bucket and get this PII-shaped autofill data pushed regardless of whether it actually
+ * holds appointment_scheduler/appointment_booking. A session without that permission never
+ * sends/audits a push at all -- gating only downstream (the gateway's relay.ts, or
+ * web-sdk's client-side check) would mean an audit record claims a push happened that was
+ * silently dropped, and would ship PII-shaped data over the internal WS for no reason.
+ * (result.formFieldsThisTurn is pipeline.ts's own high-water-mark diff -- see
+ * RunTurnResult's doc comment for why it's not simply session.slots vs. updatedSlots.) */
 function computeFormFields(session: DialogueSession, result: RunTurnResult): Record<string, unknown> {
-  return session.role === 'ROLE_RECEPTIONIST' ? result.formFieldsThisTurn : {};
+  return isToolAllowed('book_appointment', session.permissions) ? result.formFieldsThisTurn : {};
 }
 
 if (process.env.NODE_ENV !== 'test') {

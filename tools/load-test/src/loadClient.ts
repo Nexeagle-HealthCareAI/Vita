@@ -61,7 +61,7 @@ async function runCall(
   frameIntervalMs: number,
   holdTimeMs: number,
 ): Promise<void> {
-  const token = jwt.sign({ sub: `load-test-${config.callId}`, role: 'ROLE_RECEPTIONIST' }, config.jwtSecret);
+  const token = jwt.sign({ sub: `load-test-${config.callId}` }, config.jwtSecret);
 
   const ticketRes = await fetch(`${config.gatewayHttpUrl}/session/ticket`, {
     method: 'POST',

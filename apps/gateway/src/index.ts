@@ -135,7 +135,7 @@ export function buildServer(deps?: {
       }
       const { claims, resumeIntent, consentGiven } = redeemed;
 
-      req.log.info({ sub: claims.sub, role: claims.role, resuming: !!resumeIntent }, 'session established');
+      req.log.info({ sub: claims.sub, resuming: !!resumeIntent }, 'session established');
 
       if (resumeIntent) {
         // Force-close any relay this process still has live for the target sessionId

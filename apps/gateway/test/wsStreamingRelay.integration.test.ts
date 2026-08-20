@@ -88,7 +88,7 @@ describe('gateway WS relay -- streaming-enabled call falls back to batch end to 
     if (typeof address !== 'object' || address === null) throw new Error('no server address');
     const port = address.port;
 
-    const token = jwt.sign({ sub: 'user-1', role: 'ROLE_RECEPTIONIST' }, JWT_SECRET);
+    const token = jwt.sign({ sub: 'user-1' }, JWT_SECRET);
     const ticketRes = await app.inject({ method: 'POST', url: '/session/ticket', headers: { authorization: `Bearer ${token}` } });
     expect(ticketRes.statusCode).toBe(200);
     const { ticket } = JSON.parse(ticketRes.body) as { ticket: string };

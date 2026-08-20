@@ -176,6 +176,17 @@ export interface StaffAuthContext {
   accessToken: string;
 }
 
+export interface UserPermissionsResult {
+  permissionKeys: string[];
+  hospitalId: string | null;
+}
+
+interface RawUserPermissionsResponse {
+  permissionKeys: string[] | null;
+  hospitalId: string | null;
+  forbidden: boolean;
+}
+
 export class HmsClient {
   constructor(
     private baseUrl: string,
@@ -205,8 +216,13 @@ export class HmsClient {
    * surface can't reach. No retry on 401 or 403: unlike a client-minted credential, there is
    * no fresher token Vita could obtain on the real staff member's behalf -- either code means
    * their own forwarded credential is stale, revoked, or insufficient, and that's a clean
-   * failure to surface, not something to paper over. */
-  private async requestAsStaff<T>(path: string, init: RequestInit, staffAuth: StaffAuthContext): Promise<T> {
+   * failure to surface, not something to paper over.
+   *
+   * Only ever reads staffAuth.accessToken (hospitalId is used solely at call sites like
+   * markAppointmentArrived's, to build THEIR OWN request body -- not needed by every staff
+   * call, e.g. GET /user/permissions is [SkipHospitalAccessCheck]) -- narrowed to just the
+   * token so a caller with no real hospitalId (getUserPermissions) doesn't need a fake one. */
+  private async requestAsStaff<T>(path: string, init: RequestInit, staffAuth: Pick<StaffAuthContext, 'accessToken'>): Promise<T> {
     const res = await this.fetchImpl(`${this.baseUrl}${path}`, {
       ...init,
       headers: {
@@ -317,5 +333,31 @@ export class HmsClient {
       tokenNo: data.tokenNo,
       status: data.status,
     };
+  }
+
+  /** Resolves the REAL permission-key set + default hospitalId for a real easyHMSAPI user,
+   * via the existing GET user/permissions endpoint -- the source of truth Vita's own RBAC
+   * (see apps/orchestrator/src/rbac.ts) derives from, instead of a hand-maintained role
+   * enum. Always called self-only: userId must be the SAME person the accessToken belongs
+   * to (see UserController.GetUserPermissions's self-only check on the easyHMSAPI side) --
+   * this client has no reason to ever query someone else's permissions.
+   *
+   * Resolves to an empty permission set (never throws) for a not-found/no-roles user (a
+   * literal `null` JSON body -- see UserPermissionsHandler's own null-return branches) or an
+   * unexpected `forbidden: true` (shouldn't happen for a genuine self-lookup, but degrading
+   * to "no permissions" is the correct deny-by-default outcome either way) -- a real HTTP/
+   * network failure still throws via requestAsStaff's own !res.ok check, which the caller
+   * (apps/orchestrator/src/permissions.ts) is responsible for catching and logging. */
+  async getUserPermissions(userId: string, accessToken: string): Promise<UserPermissionsResult> {
+    const qs = new URLSearchParams({ userId });
+    const data = await this.requestAsStaff<RawUserPermissionsResponse | null>(
+      `/user/permissions?${qs.toString()}`,
+      { method: 'GET' },
+      { accessToken },
+    );
+    if (!data || data.forbidden) {
+      return { permissionKeys: [], hospitalId: null };
+    }
+    return { permissionKeys: data.permissionKeys ?? [], hospitalId: data.hospitalId ?? null };
   }
 }

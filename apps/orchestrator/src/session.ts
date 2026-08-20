@@ -8,7 +8,17 @@ export type TurnState = 'IDLE' | 'LISTENING' | 'PROCESSING' | 'SPEAKING';
 export interface DialogueSession {
   sessionId: string;
   userId: string;
-  role: 'ROLE_RECEPTIONIST' | 'ROLE_DOCTOR';
+  /** UX-only bucket (system-prompt framing / Groq model selection, see pipeline.ts) --
+   * derived server-side from `permissions` at session-creation time (see permissions.ts's
+   * derivePersona). NEVER an authorization input -- see rbac.ts's Persona doc comment. Named
+   * `persona`, not `role`, specifically so it doesn't invite being read as one again. */
+  persona: 'ROLE_RECEPTIONIST' | 'ROLE_DOCTOR';
+  /** The calling staff member's REAL easyHMSAPI permission keys, resolved once at session-
+   * creation time via GET user/permissions using their forwarded JWT (see permissions.ts) --
+   * the actual authorization ground truth (see rbac.ts's TOOL_PERMISSIONS). Defaults to []
+   * (deny-by-default) for a session with no hmsAccessToken or a failed resolve -- never
+   * undefined. */
+  permissions: string[];
   turnState: TurnState;
   slots: Record<string, unknown>;
   /** Conversation history sent to Groq on every turn -- without this the LLM has no
@@ -23,7 +33,7 @@ export interface DialogueSession {
    * StaffAuthUnavailableError), not a hard failure. hmsAccessToken is a real, live bearer
    * credential -- see .env.example's SESSION_ENCRYPTION_KEY comment, since this field is
    * exactly why that key should be treated as effectively mandatory once staff-auth tools
-   * are in use. */
+   * are in use. Also the source `permissions` above is resolved from -- see permissions.ts. */
   hospitalId?: string;
   hmsAccessToken?: string;
   updatedAt: number;

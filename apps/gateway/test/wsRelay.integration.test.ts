@@ -78,7 +78,7 @@ describe('gateway WS relay -- one happy-path utterance, end to end through real 
     if (typeof address !== 'object' || address === null) throw new Error('no server address');
     const port = address.port;
 
-    const token = jwt.sign({ sub: 'user-1', role: 'ROLE_RECEPTIONIST' }, JWT_SECRET);
+    const token = jwt.sign({ sub: 'user-1' }, JWT_SECRET);
     const ticketRes = await app.inject({ method: 'POST', url: '/session/ticket', headers: { authorization: `Bearer ${token}` } });
     expect(ticketRes.statusCode).toBe(200);
     const { ticket } = JSON.parse(ticketRes.body) as { ticket: string };
@@ -119,7 +119,6 @@ describe('gateway WS relay -- one happy-path utterance, end to end through real 
     expect(orchestrator.createSession).toHaveBeenCalledWith({
       sessionId: expect.any(String),
       userId: 'user-1',
-      role: 'ROLE_RECEPTIONIST',
       consentGiven: false,
     });
     expect(orchestrator.postAudioTurn).toHaveBeenCalledTimes(1);

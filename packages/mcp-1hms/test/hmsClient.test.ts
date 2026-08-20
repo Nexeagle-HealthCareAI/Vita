@@ -177,4 +177,43 @@ describe('HmsClient', () => {
       expect(fetchImpl).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('getUserPermissions (RBAC source of truth, staff-auth, self-only)', () => {
+    it('queries /user/permissions with Authorization: Bearer and maps the response', async () => {
+      const fetchImpl = fakeFetch({ permissionKeys: ['appointment_scheduler', 'patients'], hospitalId: 'h-1', forbidden: false });
+      const client = new HmsClient('https://hms.internal', '', fetchImpl);
+
+      const result = await client.getUserPermissions('u-1', 'real-user-token');
+
+      expect(result).toEqual({ permissionKeys: ['appointment_scheduler', 'patients'], hospitalId: 'h-1' });
+      const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(url).toBe('https://hms.internal/user/permissions?userId=u-1');
+      expect((init as { headers: Record<string, string> }).headers.Authorization).toBe('Bearer real-user-token');
+    });
+
+    it('resolves to an empty permission set (not a throw) when the body is a literal null (user not found/no roles)', async () => {
+      const fetchImpl = fakeFetch(null);
+      const client = new HmsClient('https://hms.internal', '', fetchImpl);
+
+      const result = await client.getUserPermissions('u-1', 'real-user-token');
+
+      expect(result).toEqual({ permissionKeys: [], hospitalId: null });
+    });
+
+    it('resolves to an empty permission set (not a throw) when the server unexpectedly reports forbidden', async () => {
+      const fetchImpl = fakeFetch({ permissionKeys: ['admin_panel'], hospitalId: 'h-1', forbidden: true });
+      const client = new HmsClient('https://hms.internal', '', fetchImpl);
+
+      const result = await client.getUserPermissions('u-1', 'real-user-token');
+
+      expect(result).toEqual({ permissionKeys: [], hospitalId: null });
+    });
+
+    it('a real HTTP failure still throws (distinct from the null/forbidden soft-empty cases)', async () => {
+      const fetchImpl = fakeFetch({ error: 'bad request' }, false, 400);
+      const client = new HmsClient('https://hms.internal', '', fetchImpl);
+
+      await expect(client.getUserPermissions('u-1', 'real-user-token')).rejects.toThrow(/400/);
+    });
+  });
 });

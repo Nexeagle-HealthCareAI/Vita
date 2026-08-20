@@ -20,7 +20,6 @@ describe('OrchestratorClient', () => {
       const result = await client.createSession({
         sessionId: 'sess-1',
         userId: 'user-1',
-        role: 'ROLE_RECEPTIONIST',
         consentGiven: true,
       });
 
@@ -32,7 +31,7 @@ describe('OrchestratorClient', () => {
       const client = new OrchestratorClient('http://orchestrator', fetchImpl);
 
       expect(
-        await client.createSession({ sessionId: 'sess-1', userId: 'user-1', role: 'ROLE_RECEPTIONIST', consentGiven: true }),
+        await client.createSession({ sessionId: 'sess-1', userId: 'user-1', consentGiven: true }),
       ).toBeNull();
     });
 
@@ -43,7 +42,6 @@ describe('OrchestratorClient', () => {
       await client.createSession({
         sessionId: 'sess-1',
         userId: 'user-1',
-        role: 'ROLE_RECEPTIONIST',
         consentGiven: true,
         hospitalId: 'h-1',
         hmsAccessToken: 'real-staff-jwt',
@@ -54,7 +52,6 @@ describe('OrchestratorClient', () => {
       expect(body).toEqual({
         sessionId: 'sess-1',
         userId: 'user-1',
-        role: 'ROLE_RECEPTIONIST',
         consentGiven: true,
         hospitalId: 'h-1',
         hmsAccessToken: 'real-staff-jwt',

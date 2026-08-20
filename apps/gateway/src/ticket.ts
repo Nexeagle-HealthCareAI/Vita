@@ -3,7 +3,6 @@ import jwt from 'jsonwebtoken';
 
 export interface SessionClaims {
   sub: string; // user id
-  role: 'ROLE_RECEPTIONIST' | 'ROLE_DOCTOR';
   /** Forwarded from easyHMSWeb's own already-authenticated browser session at mint time --
    * NOT derivable from hmsAccessToken itself (easyHMSAPI's own JWT carries no hospitalId
    * claim; membership is resolved server-side per-request there). Optional so an
@@ -56,14 +55,16 @@ export function verifyJwtAndIssueTicket(
   resumeIntent?: ResumeIntent,
   consentGiven = false,
 ): string {
-  // Role and identity come ONLY from the verified JWT — never from anything
-  // the client sends alongside it. This is what closes the privilege-
-  // escalation gap from the v1.0 draft, where `role` was a client-supplied
-  // WS query param.
+  // Identity (and, when present, hospitalId/hmsAccessToken) come ONLY from the verified
+  // JWT — never from anything the client sends alongside it. This is what closes the
+  // privilege-escalation gap from the v1.0 draft, where `role` was a client-supplied WS
+  // query param (role/persona is no longer part of this contract at all -- it's now
+  // derived server-side, orchestrator-side, from real resolved permissions -- see
+  // apps/orchestrator/src/rbac.ts's Persona doc comment).
   const decoded = jwt.verify(bearerToken, secret) as SessionClaims;
   const ticket = randomUUID();
   tickets.set(ticket, {
-    claims: { sub: decoded.sub, role: decoded.role, hospitalId: decoded.hospitalId, hmsAccessToken: decoded.hmsAccessToken },
+    claims: { sub: decoded.sub, hospitalId: decoded.hospitalId, hmsAccessToken: decoded.hmsAccessToken },
     expiresAt: Date.now() + TICKET_TTL_MS,
     redeemed: false,
     resumeIntent: resumeIntent ?? null,

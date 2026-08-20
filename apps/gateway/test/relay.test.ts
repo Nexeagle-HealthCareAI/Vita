@@ -6,7 +6,7 @@ import { ConnectionRelay, type RelayConfig } from '../src/relay.js';
 import { BatchTurnBackend, type TurnBackend, type TurnBackendEvents, type TurnBackendFactory } from '../src/turnBackend.js';
 import type { SessionClaims } from '../src/ticket.js';
 
-const CLAIMS: SessionClaims = { sub: 'user-1', role: 'ROLE_RECEPTIONIST' };
+const CLAIMS: SessionClaims = { sub: 'user-1' };
 
 function fakeAudioPreprocess() {
   const client = Object.create(AudioPreprocessClient.prototype) as AudioPreprocessClient;
@@ -298,45 +298,6 @@ describe('ConnectionRelay', () => {
       event: 'UI_FORM_AUTOFILL',
       data: { patientName: 'Riya Sharma', patientMobile: '9999999999' },
     });
-  });
-
-  it('suppresses UI_FORM_AUTOFILL for a ROLE_DOCTOR session even if the orchestrator response carries formFields', async () => {
-    // Shouldn't happen for a real call (the orchestrator's own role gate already nulls
-    // formFields for a ROLE_DOCTOR session before this response is ever built) -- proves
-    // the gateway's own redundant, defense-in-depth check (relay.ts's onFormAutofill)
-    // works too, independent of the orchestrator's gate.
-    const audio = new Uint8Array(3200);
-    const orchestrator = fakeOrchestrator({
-      ok: true,
-      data: {
-        transcript: 'is dr patel free',
-        replyText: 'Yes.',
-        audioBase64: Buffer.from(audio).toString('base64'),
-        toolCallsExecuted: ['check_doctor_availability'],
-        formFields: { doctorId: 'd-1' },
-      },
-    });
-    const audioPreprocess = fakeAudioPreprocess();
-    (audioPreprocess.process as ReturnType<typeof vi.fn>).mockResolvedValue({ frame: frame(1), speechDetected: true });
-
-    const sent: (string | Uint8Array)[] = [];
-    const relay = new ConnectionRelay(
-      {
-        audioPreprocess,
-        orchestrator,
-        backendFactory: fakeBackendFactory(orchestrator),
-        claims: { sub: 'user-1', role: 'ROLE_DOCTOR' },
-        send: (d) => sent.push(d),
-      },
-      { minUtteranceSpeechMs: 20, silenceHangoverMs: 20 },
-    );
-    await relay.start();
-
-    await sendFrame(relay, frame(1)); // arms
-    (audioPreprocess.process as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ frame: frame(2), speechDetected: false });
-    await sendFrame(relay, frame(2)); // ends utterance
-
-    expect(jsonSends(sent).find((m) => (m as { event: string }).event === 'UI_FORM_AUTOFILL')).toBeUndefined();
   });
 
   it('an empty/whitespace transcript is a soft no-op: no TRANSCRIPT, no audio, straight back to LISTENING', async () => {

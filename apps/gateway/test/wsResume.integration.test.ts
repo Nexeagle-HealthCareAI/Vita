@@ -38,7 +38,7 @@ function waitForSessionReady(ws: WebSocket): Promise<SessionReady> {
 }
 
 async function mintTicket(app: ReturnType<typeof buildServer>, resume?: { resumeSessionId: string; resumeToken: string }) {
-  const token = jwt.sign({ sub: 'user-1', role: 'ROLE_RECEPTIONIST' }, JWT_SECRET);
+  const token = jwt.sign({ sub: 'user-1' }, JWT_SECRET);
   const res = await app.inject({
     method: 'POST',
     url: '/session/ticket',

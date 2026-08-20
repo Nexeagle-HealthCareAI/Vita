@@ -159,7 +159,6 @@ export class ConnectionRelay {
       const created = await this.deps.orchestrator.createSession({
         sessionId: randomUUID(),
         userId: this.deps.claims.sub,
-        role: this.deps.claims.role,
         consentGiven: this.deps.consentGiven ?? false,
         hospitalId: this.deps.claims.hospitalId,
         hmsAccessToken: this.deps.claims.hmsAccessToken,
@@ -407,11 +406,13 @@ export class ConnectionRelay {
   }
 
   private onFormAutofill(data: Record<string, unknown>): void {
-    // Redundant, defense-in-depth check -- the orchestrator's own role gate (session.role,
-    // see apps/orchestrator/src/index.ts's computeFormFields) is authoritative and already
-    // prevents this from firing for a ROLE_DOCTOR session; this is a second, cheap check on
-    // the already-in-scope, server-verified claims.role, not the primary enforcement point.
-    if (this.deps.claims.role !== 'ROLE_RECEPTIONIST') return;
+    // No gate here -- the orchestrator's own permission gate (session.permissions, see
+    // apps/orchestrator/src/index.ts's computeFormFields, isToolAllowed('book_appointment',
+    // ...)) is the sole authoritative check, matching this codebase's own precedent that
+    // every other authorization decision already lives orchestrator-side. claims.role no
+    // longer exists on the wire at all (persona/permissions are derived server-side from
+    // real resolved data, never trusted from the ticket) -- there is nothing left here to
+    // redundantly check against.
     this.sendJson({ event: 'UI_FORM_AUTOFILL', data });
   }
 
