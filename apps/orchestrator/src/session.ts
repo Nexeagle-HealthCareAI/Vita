@@ -16,6 +16,16 @@ export interface DialogueSession {
    * trimming/summarization, see docs/BUILD_GUIDE.md if this becomes a token-budget issue. */
   history: ChatMessage[];
   resumeToken: string;
+  /** Forwarded from the calling staff member's own easyHMSWeb session at ticket-mint time
+   * (see apps/gateway/src/ticket.ts's SessionClaims) -- Vita never mints or holds a
+   * credential of its own. Both optional: an older/malformed ticket, or a non-staff
+   * session, simply has no staff-auth tools available (see tools.ts's
+   * StaffAuthUnavailableError), not a hard failure. hmsAccessToken is a real, live bearer
+   * credential -- see .env.example's SESSION_ENCRYPTION_KEY comment, since this field is
+   * exactly why that key should be treated as effectively mandatory once staff-auth tools
+   * are in use. */
+  hospitalId?: string;
+  hmsAccessToken?: string;
   updatedAt: number;
 }
 

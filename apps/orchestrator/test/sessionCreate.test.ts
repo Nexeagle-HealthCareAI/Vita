@@ -58,4 +58,24 @@ describe('POST /session — DPDPA consent gate (docs/BUILD_GUIDE.md §6)', () =>
 
     expect(res.statusCode).toBe(400);
   });
+
+  it('hospitalId/hmsAccessToken (real-staff-JWT forwarding) in the request body are persisted on the created session', async () => {
+    const res = await app().inject({
+      method: 'POST',
+      url: '/session',
+      payload: {
+        sessionId: 'sess-4',
+        userId: 'user-1',
+        role: 'ROLE_RECEPTIONIST',
+        consentGiven: true,
+        hospitalId: 'h-1',
+        hmsAccessToken: 'real-staff-jwt',
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body) as { hospitalId?: string; hmsAccessToken?: string };
+    expect(body.hospitalId).toBe('h-1');
+    expect(body.hmsAccessToken).toBe('real-staff-jwt');
+  });
 });

@@ -22,6 +22,21 @@ describe('ticket issuance & redemption', () => {
     expect(redeemTicket(ticket)).toBeNull();
   });
 
+  it('carries hospitalId/hmsAccessToken through to redemption when the JWT carries them (real-staff-JWT forwarding)', () => {
+    const token = jwt.sign(
+      { sub: 'user-1', role: 'ROLE_RECEPTIONIST', hospitalId: 'h-1', hmsAccessToken: 'real-staff-jwt' },
+      SECRET,
+    );
+    const ticket = verifyJwtAndIssueTicket(token, SECRET);
+
+    expect(redeemTicket(ticket)?.claims).toEqual({
+      sub: 'user-1',
+      role: 'ROLE_RECEPTIONIST',
+      hospitalId: 'h-1',
+      hmsAccessToken: 'real-staff-jwt',
+    });
+  });
+
   it('rejects a tampered/invalid JWT', () => {
     expect(() => verifyJwtAndIssueTicket('not-a-real-jwt', SECRET)).toThrow();
   });

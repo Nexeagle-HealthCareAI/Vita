@@ -1,4 +1,4 @@
-import type { HmsClient } from '@vita/mcp-1hms';
+import type { HmsClient, StaffAuthContext } from '@vita/mcp-1hms';
 import type { HybridRetriever } from '@vita/rag';
 import { FAQ_DOCS, HOSPITAL_REFERENCE_DOCS } from '@vita/rag';
 import { assertToolPermission, isToolAllowed, type Role } from './rbac.js';
@@ -137,6 +137,18 @@ export class UnknownToolError extends Error {
   }
 }
 
+/** Thrown when a staff-auth tool (e.g. mark_appointment_arrived) is called on a session
+ * that has no forwarded staff credential -- an older/malformed ticket, or a non-staff
+ * caller. A missing-data condition, not a permission denial (that's ForbiddenError, from
+ * assertToolPermission above) -- see pipeline.ts's runToolCalls for how the two are
+ * audited differently. */
+export class StaffAuthUnavailableError extends Error {
+  constructor(tool: string) {
+    super(`${tool} requires a forwarded staff credential this session doesn't have (missing hospitalId/hmsAccessToken).`);
+    this.name = 'StaffAuthUnavailableError';
+  }
+}
+
 /**
  * Executes a tool in-process (see the plan's "in-process, not stdio MCP" decision) --
  * RBAC-checks first (assertToolPermission throws ForbiddenError, which the caller in
@@ -155,6 +167,13 @@ export class UnknownToolError extends Error {
  * site. There is exactly one production call site (pipeline.ts's runToolCalls), and a
  * swap would fail the corresponding test's assertion immediately, so this isn't
  * restructured into a named-args object for one call site.
+ *
+ * `staffAuthContext` is the calling staff member's own forwarded hospitalId+easyHMSAPI JWT
+ * (see hmsClient.ts's file header) -- optional for the same "every existing caller/test
+ * keeps compiling" reason as the two retrievers above, but ALSO deliberately never part of
+ * `args`: it comes from the session (see pipeline.ts), never from the LLM's tool-call
+ * arguments, so a mis-transcribed or adversarial voice input can never redirect which
+ * hospital's data a staff-auth tool mutates or fabricate a credential.
  */
 export async function executeTool(
   name: string,
@@ -163,6 +182,7 @@ export async function executeTool(
   hms: HmsClient,
   faqRetriever?: HybridRetriever,
   hospitalReferenceRetriever?: HybridRetriever,
+  staffAuthContext?: StaffAuthContext,
 ): Promise<unknown> {
   assertToolPermission(name, role);
 
@@ -184,8 +204,11 @@ export async function executeTool(
           reason?: string;
         },
       );
-    case 'mark_appointment_arrived':
-      return hms.markAppointmentArrived(args as { appointmentId: string; doctorId: string });
+    case 'mark_appointment_arrived': {
+      if (!staffAuthContext) throw new StaffAuthUnavailableError(name);
+      const { appointmentId, doctorId } = args as { appointmentId: string; doctorId: string };
+      return hms.markAppointmentArrived({ appointmentId, doctorId }, staffAuthContext);
+    }
     case 'search_vita_faq': {
       if (!faqRetriever) throw new UnknownToolError(name);
       const { query } = args as { query: string };

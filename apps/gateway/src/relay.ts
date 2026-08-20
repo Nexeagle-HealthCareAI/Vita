@@ -161,6 +161,8 @@ export class ConnectionRelay {
         userId: this.deps.claims.sub,
         role: this.deps.claims.role,
         consentGiven: this.deps.consentGiven ?? false,
+        hospitalId: this.deps.claims.hospitalId,
+        hmsAccessToken: this.deps.claims.hmsAccessToken,
       });
       if (!created) return false;
       established = { ...created, resumed: false };

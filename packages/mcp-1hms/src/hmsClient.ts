@@ -16,12 +16,20 @@
  *
  * A second family of methods (see `markAppointmentArrived` below) calls staff-only
  * [Authorize]+[RequiresPermission] endpoints instead of the anonymous public/* surface --
- * these send `Authorization: Bearer <token>` (via an injected HmsAuthClient) rather than
- * the public surface's optional X-Api-Key, and are deliberately kept on a SEPARATE request
- * path (requestAsStaff, not request) since the two headers represent different trust
- * boundaries with no verified interaction between them.
+ * these send `Authorization: Bearer <token>` rather than the public surface's optional
+ * X-Api-Key, and are deliberately kept on a SEPARATE request path (requestAsStaff, not
+ * request) since the two headers represent different trust boundaries with no verified
+ * interaction between them.
+ *
+ * The bearer token for staff-auth calls is always the REAL, currently-calling staff
+ * member's own easyHMSAPI JWT, forwarded per-session from the web app they're already
+ * logged into (see apps/gateway/src/ticket.ts's SessionClaims and
+ * apps/orchestrator/src/session.ts's DialogueSession.hmsAccessToken) -- HmsClient never
+ * mints or holds a credential of its own. That's why every staff-auth method below takes a
+ * StaffAuthContext as an explicit per-call argument rather than constructor state: a single
+ * HmsClient instance is shared across the whole orchestrator process, but each call belongs
+ * to a different real person, possibly at a different hospital.
  */
-import type { HmsAuthClient } from './hmsAuthClient.js';
 
 export interface FindDoctorsInput {
   /** Matches easyHMSAPI's dbo.MedicalSpecialities.PatientFacingCategory verbatim, e.g. "Cardiology". */
@@ -160,28 +168,20 @@ interface RawMarkArrivedResponse {
   status: string | null;
 }
 
-export interface HmsClientStaffOptions {
-  authClient?: HmsAuthClient;
-  /** This deployment's single 1HMS HospitalId -- staff-auth methods are inherently
-   * single-hospital-per-deployment (the Vita service User provisioned for auth only ever
-   * has a HospitalUser row for one hospital), same scope as index.ts's HOSPITAL_ID used
-   * for doctor-roster injection. */
-  hospitalId?: string;
+/** Per-call staff identity for a markAppointmentArrived-style call -- the real staff
+ * member's own easyHMSAPI hospitalId + bearer JWT, forwarded from their session (see this
+ * file's header comment). Never constructor/instance state. */
+export interface StaffAuthContext {
+  hospitalId: string;
+  accessToken: string;
 }
 
 export class HmsClient {
-  private authClient?: HmsAuthClient;
-  private staffHospitalId?: string;
-
   constructor(
     private baseUrl: string,
     private apiKey: string,
     private fetchImpl: typeof fetch = fetch,
-    staffOptions?: HmsClientStaffOptions,
-  ) {
-    this.authClient = staffOptions?.authClient;
-    this.staffHospitalId = staffOptions?.hospitalId;
-  }
+  ) {}
 
   private async request<T>(path: string, init: RequestInit): Promise<T> {
     const res = await this.fetchImpl(`${this.baseUrl}${path}`, {
@@ -202,35 +202,19 @@ export class HmsClient {
 
   /** Staff-auth counterpart to request() above -- sends Authorization: Bearer instead of
    * X-Api-Key, for the [Authorize]+[RequiresPermission] endpoints the anonymous public
-   * surface can't reach. A 401 (stale/bad token) triggers exactly one forced re-login and
-   * retry; a 403 (right identity, wrong permission/hospital -- e.g. HospitalAccessFilter or
-   * PermissionAuthorizationFilter denying the request) never retries, since retrying can't
-   * fix a permission problem and would just mask a live credential-revocation event (see
-   * seed_vita_service_role.sql's incident-response doc comment). */
-  private async requestAsStaff<T>(path: string, init: RequestInit): Promise<T> {
-    if (!this.authClient) {
-      throw new Error(`1HMS staff API ${path} called with no HmsAuthClient configured -- staff auth is not set up for this deployment.`);
-    }
-    const authClient = this.authClient;
-
-    const send = async (token: string) =>
-      this.fetchImpl(`${this.baseUrl}${path}`, {
-        ...init,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-          ...init.headers,
-        },
-      });
-
-    let token = await authClient.getToken();
-    let res = await send(token);
-
-    if (res.status === 401) {
-      token = await authClient.forceRefresh();
-      res = await send(token);
-    }
-
+   * surface can't reach. No retry on 401 or 403: unlike a client-minted credential, there is
+   * no fresher token Vita could obtain on the real staff member's behalf -- either code means
+   * their own forwarded credential is stale, revoked, or insufficient, and that's a clean
+   * failure to surface, not something to paper over. */
+  private async requestAsStaff<T>(path: string, init: RequestInit, staffAuth: StaffAuthContext): Promise<T> {
+    const res = await this.fetchImpl(`${this.baseUrl}${path}`, {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${staffAuth.accessToken}`,
+        ...init.headers,
+      },
+    });
     if (!res.ok) {
       throw new Error(`1HMS staff API ${path} failed: ${res.status} ${await res.text()}`);
     }
@@ -311,25 +295,22 @@ export class HmsClient {
 
   /** Reception check-in override -- issues a queue token for an appointment that already
    * exists, without the patient-side geofence check (POST public/tokens's trust model).
-   * Staff-auth only: this is the proof-of-concept slice for Vita's staff-equivalent
-   * credential (see the plan's "first proof-of-concept slice" section) -- chosen first
-   * because it's idempotent (QueueCheckInHelper.CheckInAsync: a retried call for an
-   * appointment that already has a token just returns the existing one) and can only act
-   * on an appointment that already exists, never create/commit new state.
+   * Staff-auth only: this is the proof-of-concept slice for real-staff-JWT forwarding --
+   * chosen first because it's idempotent (QueueCheckInHelper.CheckInAsync: a retried call
+   * for an appointment that already has a token just returns the existing one) and can only
+   * act on an appointment that already exists, never create/commit new state.
    *
-   * hospitalId is NOT a caller-supplied argument -- see HmsClientStaffOptions.hospitalId's
-   * doc comment for why this is deployment-scoped config, not per-call LLM-supplied data
-   * (the LLM's transcribed/inferred values should never decide which hospital's data this
-   * mutates). Throws if staff auth isn't configured for this deployment at all. */
-  async markAppointmentArrived(input: MarkAppointmentArrivedInput): Promise<MarkAppointmentArrivedResult> {
-    if (!this.staffHospitalId) {
-      throw new Error('markAppointmentArrived called with no staff hospitalId configured for this deployment.');
-    }
-    const body = { appointmentId: input.appointmentId, hospitalId: this.staffHospitalId };
-    const data = await this.requestAsStaff<RawMarkArrivedResponse>(`/queue/${input.doctorId}/mark-arrived`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    });
+   * staffAuth.hospitalId is NEVER a caller-supplied LLM argument -- see StaffAuthContext's
+   * doc comment. It comes from the calling staff member's own session, never from
+   * transcribed/inferred voice input, so a mis-transcription can't redirect which
+   * hospital's data this mutates. */
+  async markAppointmentArrived(input: MarkAppointmentArrivedInput, staffAuth: StaffAuthContext): Promise<MarkAppointmentArrivedResult> {
+    const body = { appointmentId: input.appointmentId, hospitalId: staffAuth.hospitalId };
+    const data = await this.requestAsStaff<RawMarkArrivedResponse>(
+      `/queue/${input.doctorId}/mark-arrived`,
+      { method: 'POST', body: JSON.stringify(body) },
+      staffAuth,
+    );
     return {
       success: data.success,
       message: data.message,

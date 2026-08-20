@@ -113,4 +113,25 @@ describe('gateway HTTP surface', () => {
       expect(redeemTicket(ticket)?.resumeIntent).toBeNull();
     });
   });
+
+  it('a JWT carrying hospitalId/hmsAccessToken (real-staff-JWT forwarding) reaches redeemTicket()\'s claims end-to-end', async () => {
+    const app = buildServer();
+    const token = jwt.sign(
+      { sub: 'user-1', role: 'ROLE_RECEPTIONIST', hospitalId: 'h-1', hmsAccessToken: 'real-staff-jwt' },
+      JWT_SECRET,
+    );
+    const res = await app.inject({
+      method: 'POST',
+      url: '/session/ticket',
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    const { ticket } = res.json() as { ticket: string };
+    expect(redeemTicket(ticket)?.claims).toEqual({
+      sub: 'user-1',
+      role: 'ROLE_RECEPTIONIST',
+      hospitalId: 'h-1',
+      hmsAccessToken: 'real-staff-jwt',
+    });
+  });
 });

@@ -295,6 +295,42 @@ describe('runTurn — slot-tracking across turns', () => {
   });
 });
 
+describe('runTurn — staffAuthContext derivation (real per-user JWT forwarding)', () => {
+  it('a session with both hospitalId and hmsAccessToken forwards them as staffAuthContext to HmsClient.markAppointmentArrived', async () => {
+    const brain = mockGroq([
+      { content: null, toolCalls: [{ id: 'call_1', name: 'mark_appointment_arrived', arguments: { appointmentId: 'a-1', doctorId: 'd-1' } }] },
+      { content: "Checked in -- you're all set.", toolCalls: [] },
+    ]);
+    const tts = mockTts();
+    const hms = mockHms();
+    const session = baseSession({ hospitalId: 'h-1', hmsAccessToken: 'real-staff-jwt' });
+
+    const result = await runTurn({ session, transcript: 'mark them arrived', brain, tts, hms });
+
+    expect(hms.markAppointmentArrived).toHaveBeenCalledWith(
+      { appointmentId: 'a-1', doctorId: 'd-1' },
+      { hospitalId: 'h-1', accessToken: 'real-staff-jwt' },
+    );
+    expect(result.toolCallsExecuted).toEqual(['mark_appointment_arrived']);
+  });
+
+  it('a session missing hospitalId or hmsAccessToken never calls HmsClient.markAppointmentArrived -- the tool call fails cleanly instead', async () => {
+    const brain = mockGroq([
+      { content: null, toolCalls: [{ id: 'call_1', name: 'mark_appointment_arrived', arguments: { appointmentId: 'a-1', doctorId: 'd-1' } }] },
+      { content: "Sorry, I can't do that right now.", toolCalls: [] },
+    ]);
+    const tts = mockTts();
+    const hms = mockHms();
+    const session = baseSession(); // no hospitalId/hmsAccessToken
+
+    const result = await runTurn({ session, transcript: 'mark them arrived', brain, tts, hms });
+
+    expect(hms.markAppointmentArrived).not.toHaveBeenCalled();
+    const toolResultMessage = result.updatedHistory.find((m) => m.role === 'tool' && m.tool_call_id === 'call_1');
+    expect(JSON.parse(toolResultMessage!.content).error).toContain('forwarded staff credential');
+  });
+});
+
 describe('runTurn — phonetic normalization (spoken audio vs. displayed/logged text)', () => {
   it('synthesizes normalized text but returns/records the original, unnormalized text', async () => {
     const brain = mockGroq([{ content: 'Dr. Patel is free at 14:30:00 on 2026-08-20.', toolCalls: [] }]);

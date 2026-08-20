@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { HmsClient } from '../src/hmsClient.js';
-import type { HmsAuthClient } from '../src/hmsAuthClient.js';
+import type { StaffAuthContext } from '../src/hmsClient.js';
 
 function fakeFetch(body: unknown, ok = true, status = 200) {
   return vi.fn().mockResolvedValue({
@@ -9,13 +9,6 @@ function fakeFetch(body: unknown, ok = true, status = 200) {
     json: async () => body,
     text: async () => JSON.stringify(body),
   }) as unknown as typeof fetch;
-}
-
-function fakeAuthClient(token = 'token-1', refreshedToken = 'token-2') {
-  return {
-    getToken: vi.fn().mockResolvedValue(token),
-    forceRefresh: vi.fn().mockResolvedValue(refreshedToken),
-  } as unknown as HmsAuthClient;
 }
 
 describe('HmsClient', () => {
@@ -150,88 +143,37 @@ describe('HmsClient', () => {
     expect((init as RequestInit).headers).not.toHaveProperty('X-Api-Key');
   });
 
-  describe('markAppointmentArrived (staff-auth)', () => {
-    it('posts to /queue/{doctorId}/mark-arrived with Authorization: Bearer, never X-Api-Key, and maps the response', async () => {
-      const fetchImpl = fakeFetch({ success: true, message: null, tokenNo: 7, status: 'READY' });
-      const authClient = fakeAuthClient('token-1');
-      const client = new HmsClient('https://hms.internal', 'some-api-key', fetchImpl, {
-        authClient,
-        hospitalId: 'h-1',
-      });
+  describe('markAppointmentArrived (staff-auth, real per-user forwarded JWT)', () => {
+    const staffAuth: StaffAuthContext = { hospitalId: 'h-1', accessToken: 'real-user-token' };
 
-      const result = await client.markAppointmentArrived({ appointmentId: 'a-1', doctorId: 'd-1' });
+    it('posts to /queue/{doctorId}/mark-arrived with Authorization: Bearer <the forwarded token>, never X-Api-Key, and maps the response', async () => {
+      const fetchImpl = fakeFetch({ success: true, message: null, tokenNo: 7, status: 'READY' });
+      const client = new HmsClient('https://hms.internal', 'some-api-key', fetchImpl);
+
+      const result = await client.markAppointmentArrived({ appointmentId: 'a-1', doctorId: 'd-1' }, staffAuth);
 
       expect(result).toEqual({ success: true, message: null, tokenNo: 7, status: 'READY' });
-      expect(authClient.getToken).toHaveBeenCalledTimes(1);
       const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0];
       expect(url).toBe('https://hms.internal/queue/d-1/mark-arrived');
       const initTyped = init as RequestInit;
-      expect((initTyped.headers as Record<string, string>).Authorization).toBe('Bearer token-1');
+      expect((initTyped.headers as Record<string, string>).Authorization).toBe('Bearer real-user-token');
       expect(initTyped.headers).not.toHaveProperty('X-Api-Key');
       expect(JSON.parse(initTyped.body as string)).toEqual({ appointmentId: 'a-1', hospitalId: 'h-1' });
     });
 
-    it('throws a clear configuration error when no authClient is set, without sending a request', async () => {
-      const fetchImpl = fakeFetch({});
-      const client = new HmsClient('https://hms.internal', '', fetchImpl, { hospitalId: 'h-1' });
+    it('a 401 (stale/bad forwarded token) fails immediately -- no retry, Vita has no fresher token to obtain on the caller\'s behalf', async () => {
+      const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({}), text: async () => 'expired' });
+      const client = new HmsClient('https://hms.internal', '', fetchImpl as unknown as typeof fetch);
 
-      await expect(client.markAppointmentArrived({ appointmentId: 'a-1', doctorId: 'd-1' })).rejects.toThrow(
-        /no HmsAuthClient configured/,
-      );
-      expect(fetchImpl).not.toHaveBeenCalled();
+      await expect(client.markAppointmentArrived({ appointmentId: 'a-1', doctorId: 'd-1' }, staffAuth)).rejects.toThrow(/401/);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
     });
 
-    it('throws a clear configuration error when no staff hospitalId is set, without sending a request', async () => {
-      const fetchImpl = fakeFetch({});
-      const authClient = fakeAuthClient();
-      const client = new HmsClient('https://hms.internal', '', fetchImpl, { authClient });
+    it('a 403 (permission/hospital denial) also fails immediately with no retry', async () => {
+      const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 403, json: async () => ({}), text: async () => 'forbidden' });
+      const client = new HmsClient('https://hms.internal', '', fetchImpl as unknown as typeof fetch);
 
-      await expect(client.markAppointmentArrived({ appointmentId: 'a-1', doctorId: 'd-1' })).rejects.toThrow(
-        /no staff hospitalId configured/,
-      );
-      expect(fetchImpl).not.toHaveBeenCalled();
-    });
-
-    it('a 401 triggers exactly one forced re-login and retry, then succeeds', async () => {
-      const fetchImpl = vi
-        .fn()
-        .mockResolvedValueOnce({ ok: false, status: 401, json: async () => ({}), text: async () => 'expired' })
-        .mockResolvedValueOnce({
-          ok: true,
-          status: 200,
-          json: async () => ({ success: true, message: null, tokenNo: 3, status: 'READY' }),
-          text: async () => '',
-        });
-      const authClient = fakeAuthClient('stale-token', 'fresh-token');
-      const client = new HmsClient('https://hms.internal', '', fetchImpl as unknown as typeof fetch, {
-        authClient,
-        hospitalId: 'h-1',
-      });
-
-      const result = await client.markAppointmentArrived({ appointmentId: 'a-1', doctorId: 'd-1' });
-
-      expect(result.success).toBe(true);
-      expect(authClient.forceRefresh).toHaveBeenCalledTimes(1);
-      expect(fetchImpl).toHaveBeenCalledTimes(2);
-      const secondInit = fetchImpl.mock.calls[1][1] as RequestInit;
-      expect((secondInit.headers as Record<string, string>).Authorization).toBe('Bearer fresh-token');
-    });
-
-    it('a 403 never retries -- retrying a permission denial can only mask a live revocation', async () => {
-      const fetchImpl = vi.fn().mockResolvedValue({
-        ok: false,
-        status: 403,
-        json: async () => ({}),
-        text: async () => 'forbidden',
-      });
-      const authClient = fakeAuthClient('token-1');
-      const client = new HmsClient('https://hms.internal', '', fetchImpl as unknown as typeof fetch, {
-        authClient,
-        hospitalId: 'h-1',
-      });
-
-      await expect(client.markAppointmentArrived({ appointmentId: 'a-1', doctorId: 'd-1' })).rejects.toThrow(/403/);
-      expect(authClient.forceRefresh).not.toHaveBeenCalled();
+      await expect(client.markAppointmentArrived({ appointmentId: 'a-1', doctorId: 'd-1' }, staffAuth)).rejects.toThrow(/403/);
       expect(fetchImpl).toHaveBeenCalledTimes(1);
     });
   });

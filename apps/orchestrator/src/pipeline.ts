@@ -1,8 +1,8 @@
-import type { HmsClient } from '@vita/mcp-1hms';
+import type { HmsClient, StaffAuthContext } from '@vita/mcp-1hms';
 import type { HybridRetriever } from '@vita/rag';
 import type { BrainProvider, ChatMessage, ToolCall } from './brain/types.js';
 import type { TtsProvider } from './tts/types.js';
-import { TOOL_SCHEMAS, executeTool, toolSchemasForRole, UnknownToolError } from './tools.js';
+import { TOOL_SCHEMAS, executeTool, toolSchemasForRole, UnknownToolError, StaffAuthUnavailableError } from './tools.js';
 import { assertToolPermission, isToolAllowed, ForbiddenError, type Role } from './rbac.js';
 import { recordAuditEvent } from './audit.js';
 import type { DialogueSession } from './session.js';
@@ -117,6 +117,17 @@ async function runToolCalls(opts: {
 }): Promise<void> {
   const { toolCalls, session, hms, faqRetriever, hospitalReferenceRetriever, history, toolCallsExecuted, slots, touchedSlots } = opts;
 
+  // Derived once per turn from the session's own forwarded fields (see session.ts's
+  // DialogueSession.hospitalId/hmsAccessToken doc comment) -- undefined for any session
+  // that never carried a staff credential, which executeTool/StaffAuthUnavailableError
+  // below treats as "no staff-auth tools available this session", not a hard failure.
+  // Never derived from call.arguments -- the LLM's tool-call args can never supply or
+  // influence this.
+  const staffAuthContext: StaffAuthContext | undefined =
+    session.hospitalId && session.hmsAccessToken
+      ? { hospitalId: session.hospitalId, accessToken: session.hmsAccessToken }
+      : undefined;
+
   for (const call of toolCalls) {
     let resultText: string;
     // Set once RBAC passes and backfill runs -- stays undefined for a ForbiddenError, so
@@ -158,7 +169,7 @@ async function runToolCalls(opts: {
         continue;
       }
 
-      const toolResult = await executeTool(call.name, filledArgs, session.role, hms, faqRetriever, hospitalReferenceRetriever);
+      const toolResult = await executeTool(call.name, filledArgs, session.role, hms, faqRetriever, hospitalReferenceRetriever, staffAuthContext);
       recordAuditEvent({
         ts: Date.now(),
         sessionId: session.sessionId,
@@ -192,7 +203,10 @@ async function runToolCalls(opts: {
         outcome,
       });
       resultText = JSON.stringify({
-        error: err instanceof ForbiddenError || err instanceof UnknownToolError ? err.message : 'Tool call failed',
+        error:
+          err instanceof ForbiddenError || err instanceof UnknownToolError || err instanceof StaffAuthUnavailableError
+            ? err.message
+            : 'Tool call failed',
       });
       // Authorized but the dispatch itself failed (e.g. UnknownToolError, a transient HMS
       // API error) -- the user's stated values are still real and worth keeping for a

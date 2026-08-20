@@ -18,17 +18,13 @@ export type {
   RosterDoctor,
   MarkAppointmentArrivedInput,
   MarkAppointmentArrivedResult,
-  HmsClientStaffOptions,
+  StaffAuthContext,
 } from './hmsClient.js';
-// Staff-equivalent credential (see hmsAuthClient.ts's file header) -- re-exported for the
-// orchestrator's composition root (index.ts) to construct alongside HmsClient. NOT wired
-// into buildMcpServer below: that stdio MCP surface has no RBAC/audit layer at all (its 3
-// existing tools all call the anonymous public/* surface unconditionally), so a
-// staff-privileged mutating action stays reachable ONLY through the orchestrator's own
-// RBAC+audit-gated executeTool dispatch (apps/orchestrator/src/tools.ts), never through this
-// generic path.
-export { HmsAuthClient } from './hmsAuthClient.js';
-export type { HmsStaffCredentials } from './hmsAuthClient.js';
+// StaffAuthContext (see hmsClient.ts's file header) is NOT wired into buildMcpServer below:
+// that stdio MCP surface has no RBAC/audit layer at all (its 3 existing tools all call the
+// anonymous public/* surface unconditionally), so a staff-privileged mutating action stays
+// reachable ONLY through the orchestrator's own RBAC+audit-gated executeTool dispatch
+// (apps/orchestrator/src/tools.ts), never through this generic path.
 
 const hms = new HmsClient(
   process.env.HMS_API_BASE_URL ?? 'http://localhost:5000',

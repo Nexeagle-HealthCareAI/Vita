@@ -615,7 +615,12 @@ place of the shared-VM reverse proxy in §4.3. Not required for Phase 1 launch.
       environment today), so this ships dark until the key is actually set.
       No data-migration logic: `SessionStore`'s 30-minute TTL means any
       session from before a key toggle just expires and self-heals within
-      that window
+      that window. **Effectively mandatory, not optional, once staff-auth
+      tools are in use**: `DialogueSession.hmsAccessToken` (real per-user JWT
+      forwarding, see `apps/gateway/src/ticket.ts`'s `SessionClaims`) means a
+      session can now carry a real, live easyHMSAPI staff bearer credential —
+      an unset key leaves that credential in plaintext in Redis for up to the
+      30-minute idle TTL
 - [x] Move `recordAuditEvent` (`apps/orchestrator/src/audit.ts`) from stdout
       to a durable, queryable store with a defined retention period — a new
       Postgres service (`apps/orchestrator/src/auditStore.ts`'s

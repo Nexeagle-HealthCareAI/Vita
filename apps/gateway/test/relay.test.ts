@@ -131,6 +131,41 @@ describe('ConnectionRelay', () => {
     expect(events[1]).toEqual({ event: 'STATE_CHANGE', state: 'PROCESSING' });
   });
 
+  it('forwards claims.hospitalId/hmsAccessToken into createSession() when present (real-staff-JWT forwarding)', async () => {
+    const audioPreprocess = fakeAudioPreprocess();
+    const orchestrator = fakeOrchestrator();
+    const claimsWithStaffAuth: SessionClaims = { ...CLAIMS, hospitalId: 'h-1', hmsAccessToken: 'real-staff-jwt' };
+    const relay = new ConnectionRelay({
+      audioPreprocess,
+      orchestrator,
+      backendFactory: fakeBackendFactory(orchestrator),
+      claims: claimsWithStaffAuth,
+      send: () => {},
+    });
+    await relay.start();
+
+    expect(orchestrator.createSession).toHaveBeenCalledWith(
+      expect.objectContaining({ hospitalId: 'h-1', hmsAccessToken: 'real-staff-jwt' }),
+    );
+  });
+
+  it('createSession() carries undefined hospitalId/hmsAccessToken when claims never had them (backward compat)', async () => {
+    const audioPreprocess = fakeAudioPreprocess();
+    const orchestrator = fakeOrchestrator();
+    const relay = new ConnectionRelay({
+      audioPreprocess,
+      orchestrator,
+      backendFactory: fakeBackendFactory(orchestrator),
+      claims: CLAIMS,
+      send: () => {},
+    });
+    await relay.start();
+
+    const [input] = (orchestrator.createSession as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(input.hospitalId).toBeUndefined();
+    expect(input.hmsAccessToken).toBeUndefined();
+  });
+
   it('threads the session id into every audioPreprocess.process call, not just the orchestrator call', async () => {
     const audioPreprocess = fakeAudioPreprocess();
     const orchestrator = fakeOrchestrator();

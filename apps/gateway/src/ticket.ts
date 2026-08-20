@@ -4,6 +4,18 @@ import jwt from 'jsonwebtoken';
 export interface SessionClaims {
   sub: string; // user id
   role: 'ROLE_RECEPTIONIST' | 'ROLE_DOCTOR';
+  /** Forwarded from easyHMSWeb's own already-authenticated browser session at mint time --
+   * NOT derivable from hmsAccessToken itself (easyHMSAPI's own JWT carries no hospitalId
+   * claim; membership is resolved server-side per-request there). Optional so an
+   * older/malformed ticket degrades to "no staff-auth tools this session," not a hard
+   * failure -- see apps/orchestrator/src/tools.ts's StaffAuthUnavailableError. */
+  hospitalId?: string;
+  /** The real staff member's own easyHMSAPI bearer JWT, carried as opaque cargo -- this
+   * gateway never re-verifies it (no access to easyHMSAPI's own signing key) and Vita never
+   * mints a separate identity of its own. Relayed as-is when calling easyHMSAPI's
+   * staff-only endpoints on that person's behalf (see packages/mcp-1hms/src/hmsClient.ts's
+   * StaffAuthContext). */
+  hmsAccessToken?: string;
 }
 
 /** A caller's request to reattach to an existing orchestrator session instead of starting
@@ -51,7 +63,7 @@ export function verifyJwtAndIssueTicket(
   const decoded = jwt.verify(bearerToken, secret) as SessionClaims;
   const ticket = randomUUID();
   tickets.set(ticket, {
-    claims: { sub: decoded.sub, role: decoded.role },
+    claims: { sub: decoded.sub, role: decoded.role, hospitalId: decoded.hospitalId, hmsAccessToken: decoded.hmsAccessToken },
     expiresAt: Date.now() + TICKET_TTL_MS,
     redeemed: false,
     resumeIntent: resumeIntent ?? null,

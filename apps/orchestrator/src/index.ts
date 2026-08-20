@@ -2,7 +2,7 @@ import Fastify from 'fastify';
 import websocketPlugin from '@fastify/websocket';
 import { Redis as IORedis, type Redis } from 'ioredis';
 import { QdrantClient } from '@qdrant/js-client-rest';
-import { HmsClient, HmsAuthClient } from '@vita/mcp-1hms';
+import { HmsClient } from '@vita/mcp-1hms';
 import {
   HybridRetriever,
   LocalEmbedder,
@@ -59,32 +59,9 @@ export function buildServer(
     clients?.tts ??
     new SarvamTtsProvider(process.env.SARVAM_API_KEY ?? '', process.env.SARVAM_TTS_ENDPOINT ?? 'https://api.sarvam.ai/text-to-speech');
   const HOSPITAL_ID = process.env.HOSPITAL_ID;
-
-  // Vita's staff-equivalent credential (see hmsAuthClient.ts's file header and the plan's
-  // incident-response section) -- ships DARK, unlike every other HMS_API_* call today: a
-  // misconfigured/leaked credential here can mutate real appointment/patient data with real
-  // staff permission, so this needs explicit per-environment opt-in (VITA_HMS_STAFF_AUTH_ENABLED
-  // must be the literal string 'true'), not just an unset var quietly falling back to "on".
-  // Guarded on `!clients?.hms` so tests that override hms (mockHms(), every existing test)
-  // never construct a real HmsAuthClient -- its constructor fires an un-mocked background
-  // fetch() the moment it exists, which no test double here provides a mock for.
-  const VITA_HMS_STAFF_AUTH_ENABLED = process.env.VITA_HMS_STAFF_AUTH_ENABLED === 'true';
-  const VITA_HMS_STAFF_LOGIN = process.env.VITA_HMS_STAFF_LOGIN;
-  const VITA_HMS_STAFF_PASSWORD = process.env.VITA_HMS_STAFF_PASSWORD;
-  const hmsStaffAuthClient =
-    !clients?.hms && VITA_HMS_STAFF_AUTH_ENABLED && HOSPITAL_ID && VITA_HMS_STAFF_LOGIN && VITA_HMS_STAFF_PASSWORD
-      ? new HmsAuthClient(
-          process.env.HMS_API_BASE_URL ?? 'http://localhost:5000',
-          { login: VITA_HMS_STAFF_LOGIN, password: VITA_HMS_STAFF_PASSWORD },
-          Number(process.env.VITA_HMS_STAFF_TOKEN_REFRESH_INTERVAL_MS ?? 86_400_000),
-        )
-      : undefined;
   const hms =
     clients?.hms ??
-    new HmsClient(process.env.HMS_API_BASE_URL ?? 'http://localhost:5000', process.env.HMS_API_KEY ?? '', undefined, {
-      authClient: hmsStaffAuthClient,
-      hospitalId: HOSPITAL_ID,
-    });
+    new HmsClient(process.env.HMS_API_BASE_URL ?? 'http://localhost:5000', process.env.HMS_API_KEY ?? '');
 
   // Instant single-env-var rollback, independent of HOSPITAL_ID itself (which other
   // future features may reuse) -- matches SESSION_RESUME_ENABLED's `!== 'false'` idiom:
@@ -183,7 +160,17 @@ export function buildServer(
   // /session/:id/turn below for the actual STT -> LLM -> MCP -> TTS pipeline
   // (pipeline.ts's runTurn) this session then gets used with.
   app.post('/session', async (req, reply) => {
-    const body = req.body as { sessionId: string; userId: string; role: Role; consentGiven?: boolean };
+    const body = req.body as {
+      sessionId: string;
+      userId: string;
+      role: Role;
+      consentGiven?: boolean;
+      /** Forwarded from the calling staff member's own easyHMSWeb session (see
+       * apps/gateway/src/ticket.ts's SessionClaims) -- both optional, see
+       * session.ts's DialogueSession doc comment for what an absent pair means. */
+      hospitalId?: string;
+      hmsAccessToken?: string;
+    };
     // The one authoritative choke point for the DPDPA consent gate (docs/BUILD_GUIDE.md
     // §6) -- everything upstream (web-sdk, gateway ticket/relay) is a passthrough. A
     // resumed session never re-proves consent here since /session/:id/resume is a
@@ -215,6 +202,8 @@ export function buildServer(
       slots: {},
       history: [],
       resumeToken: crypto.randomUUID(),
+      hospitalId: body.hospitalId,
+      hmsAccessToken: body.hmsAccessToken,
     });
     recordAuditEvent({
       ts: Date.now(),

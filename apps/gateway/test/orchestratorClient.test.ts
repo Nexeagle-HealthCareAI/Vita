@@ -35,6 +35,31 @@ describe('OrchestratorClient', () => {
         await client.createSession({ sessionId: 'sess-1', userId: 'user-1', role: 'ROLE_RECEPTIONIST', consentGiven: true }),
       ).toBeNull();
     });
+
+    it('includes hospitalId/hmsAccessToken in the POSTed JSON when present (real-staff-JWT forwarding)', async () => {
+      const fetchImpl = fakeFetch({ ok: true, body: { sessionId: 'sess-1', resumeToken: 'tok-1', userId: 'user-1' } });
+      const client = new OrchestratorClient('http://orchestrator', fetchImpl);
+
+      await client.createSession({
+        sessionId: 'sess-1',
+        userId: 'user-1',
+        role: 'ROLE_RECEPTIONIST',
+        consentGiven: true,
+        hospitalId: 'h-1',
+        hmsAccessToken: 'real-staff-jwt',
+      });
+
+      const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0];
+      const body = JSON.parse((init as RequestInit).body as string);
+      expect(body).toEqual({
+        sessionId: 'sess-1',
+        userId: 'user-1',
+        role: 'ROLE_RECEPTIONIST',
+        consentGiven: true,
+        hospitalId: 'h-1',
+        hmsAccessToken: 'real-staff-jwt',
+      });
+    });
   });
 
   describe('resumeSession', () => {

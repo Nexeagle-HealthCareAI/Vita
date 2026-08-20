@@ -28,6 +28,29 @@ describe('SessionStore (backed by ioredis-mock)', () => {
     expect(created.turnState).toBe('IDLE');
   });
 
+  it('hospitalId/hmsAccessToken (real-staff-JWT forwarding) round-trip through create, get, and resume', async () => {
+    const store = new SessionStore(new RedisMock());
+    await store.create({
+      sessionId: 's1b',
+      userId: 'u1',
+      role: 'ROLE_RECEPTIONIST',
+      turnState: 'IDLE',
+      slots: {},
+      history: [],
+      resumeToken: 'tok-1b',
+      hospitalId: 'h-1',
+      hmsAccessToken: 'real-staff-jwt',
+    });
+
+    const fetched = await store.get('s1b');
+    expect(fetched?.hospitalId).toBe('h-1');
+    expect(fetched?.hmsAccessToken).toBe('real-staff-jwt');
+
+    const resumed = await store.resume('s1b', 'tok-1b');
+    expect(resumed?.hospitalId).toBe('h-1');
+    expect(resumed?.hmsAccessToken).toBe('real-staff-jwt');
+  });
+
   it('update() merges fields and destroy() removes the session', async () => {
     const store = new SessionStore(new RedisMock());
     await store.create({

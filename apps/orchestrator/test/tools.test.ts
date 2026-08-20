@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { HmsClient } from '@vita/mcp-1hms';
+import { HmsClient, type StaffAuthContext } from '@vita/mcp-1hms';
 import { FAQ_DOCS, HOSPITAL_REFERENCE_DOCS } from '@vita/rag';
-import { executeTool, toolSchemasForRole, UnknownToolError } from '../src/tools.js';
+import { executeTool, toolSchemasForRole, UnknownToolError, StaffAuthUnavailableError } from '../src/tools.js';
 import { ForbiddenError } from '../src/rbac.js';
 import { mockRetriever } from './helpers.js';
+
+const STAFF_AUTH: StaffAuthContext = { hospitalId: 'h-1', accessToken: 'real-staff-jwt' };
 
 function mockHms() {
   const client = Object.create(HmsClient.prototype) as HmsClient;
@@ -78,19 +80,27 @@ describe('executeTool', () => {
     expect(hms.bookAppointment).toHaveBeenCalledWith(input);
   });
 
-  it('dispatches mark_appointment_arrived to HmsClient.markAppointmentArrived (receptionist-only)', async () => {
+  it('dispatches mark_appointment_arrived to HmsClient.markAppointmentArrived with the session-derived staffAuthContext (receptionist-only)', async () => {
     const hms = mockHms();
     const input = { appointmentId: 'a-1', doctorId: 'd-1' };
-    const result = await executeTool('mark_appointment_arrived', input, 'ROLE_RECEPTIONIST', hms);
+    const result = await executeTool('mark_appointment_arrived', input, 'ROLE_RECEPTIONIST', hms, undefined, undefined, STAFF_AUTH);
     expect(result).toEqual({ success: true, message: null, tokenNo: 5, status: 'READY' });
-    expect(hms.markAppointmentArrived).toHaveBeenCalledWith(input);
+    expect(hms.markAppointmentArrived).toHaveBeenCalledWith(input, STAFF_AUTH);
   });
 
   it('denies a doctor calling mark_appointment_arrived before ever calling HmsClient', async () => {
     const hms = mockHms();
     await expect(
-      executeTool('mark_appointment_arrived', { appointmentId: 'a-1', doctorId: 'd-1' }, 'ROLE_DOCTOR', hms),
+      executeTool('mark_appointment_arrived', { appointmentId: 'a-1', doctorId: 'd-1' }, 'ROLE_DOCTOR', hms, undefined, undefined, STAFF_AUTH),
     ).rejects.toThrow(ForbiddenError);
+    expect(hms.markAppointmentArrived).not.toHaveBeenCalled();
+  });
+
+  it('throws StaffAuthUnavailableError for mark_appointment_arrived when the session has no forwarded staff credential', async () => {
+    const hms = mockHms();
+    await expect(
+      executeTool('mark_appointment_arrived', { appointmentId: 'a-1', doctorId: 'd-1' }, 'ROLE_RECEPTIONIST', hms),
+    ).rejects.toThrow(StaffAuthUnavailableError);
     expect(hms.markAppointmentArrived).not.toHaveBeenCalled();
   });
 

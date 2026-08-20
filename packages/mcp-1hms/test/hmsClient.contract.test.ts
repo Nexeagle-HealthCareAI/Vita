@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { HmsClient } from '../src/hmsClient.js';
-import { HmsAuthClient } from '../src/hmsAuthClient.js';
 
 /**
  * Contract test: hits a REAL, live easyHMSAPI instance (not a mock) and asserts the
@@ -22,13 +21,14 @@ import { HmsAuthClient } from '../src/hmsAuthClient.js';
 const BASE_URL = process.env.HMS_API_BASE_URL ?? 'http://151.185.45.77:5001';
 const API_KEY = process.env.HMS_API_KEY ?? '';
 
-// Staff-auth contract case (markAppointmentArrived) needs a REAL provisioned
-// VitaServiceAccount credential plus a stable, pre-existing (non-PRE_APPOINTMENT) dev
-// appointment to target -- neither can be created/discovered by this test itself (unlike
-// bookAppointment above, mark-arrived can't safely manufacture its own disposable fixture
-// without also faking a realistic prior booking flow). Skips entirely until an operator has
-// provisioned the per-hospital Vita service User (see
-// easyHMSDatabase/db/data/seed/seed_vita_service_role.sql's doc comment) and set these.
+// Staff-auth contract case (markAppointmentArrived) simulates what a real forwarded staff
+// JWT looks like by logging in as a real Dev staff test account directly (mirroring what
+// easyHMSWeb would forward per-session in production -- see apps/gateway/src/ticket.ts's
+// SessionClaims.hmsAccessToken) -- Vita itself never holds or mints this credential. Also
+// needs a stable, pre-existing (non-PRE_APPOINTMENT) dev appointment to target -- neither
+// can be created/discovered by this test itself (unlike bookAppointment above, mark-arrived
+// can't safely manufacture its own disposable fixture without also faking a realistic prior
+// booking flow). Skips entirely until these are set.
 const STAFF_LOGIN = process.env.VITA_HMS_STAFF_LOGIN;
 const STAFF_PASSWORD = process.env.VITA_HMS_STAFF_PASSWORD;
 const STAFF_TEST_APPOINTMENT_ID = process.env.VITA_HMS_STAFF_TEST_APPOINTMENT_ID;
@@ -37,6 +37,19 @@ const STAFF_TEST_HOSPITAL_ID = process.env.VITA_HMS_STAFF_TEST_HOSPITAL_ID;
 const staffContractConfigured = Boolean(
   STAFF_LOGIN && STAFF_PASSWORD && STAFF_TEST_APPOINTMENT_ID && STAFF_TEST_DOCTOR_ID && STAFF_TEST_HOSPITAL_ID,
 );
+
+async function loginForContractTest(): Promise<string> {
+  const res = await fetch(`${BASE_URL}/auth/user/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ emailOrPhone: STAFF_LOGIN, password: STAFF_PASSWORD, isLoginWithOtp: false }),
+  });
+  const data = (await res.json()) as { success: boolean; message: string | null; accessToken: string | null };
+  if (!res.ok || !data.success || !data.accessToken) {
+    throw new Error(`contract-test staff login failed: ${data.message ?? res.status}`);
+  }
+  return data.accessToken;
+}
 
 // Obviously-fake, greppable patient identity for the one real write this file performs
 // (bookAppointment) -- anyone auditing the dev DB's appointments/patients tables can
@@ -142,22 +155,20 @@ describe('HmsClient contract (real easyHMSAPI)', () => {
   );
 
   it.skipIf(!staffContractConfigured)(
-    'markAppointmentArrived returns the real /queue/{doctorId}/mark-arrived shape (staff-auth) -- idempotent, safe to re-run',
+    'markAppointmentArrived returns the real /queue/{doctorId}/mark-arrived shape (staff-auth, real forwarded JWT) -- idempotent, safe to re-run',
     async () => {
-      const authClient = new HmsAuthClient(BASE_URL, { login: STAFF_LOGIN!, password: STAFF_PASSWORD! }, 86_400_000);
-      const client = new HmsClient(BASE_URL, API_KEY, undefined, { authClient, hospitalId: STAFF_TEST_HOSPITAL_ID });
+      const client = new HmsClient(BASE_URL, API_KEY);
+      const accessToken = await loginForContractTest();
 
-      const result = await client.markAppointmentArrived({
-        appointmentId: STAFF_TEST_APPOINTMENT_ID!,
-        doctorId: STAFF_TEST_DOCTOR_ID!,
-      });
+      const result = await client.markAppointmentArrived(
+        { appointmentId: STAFF_TEST_APPOINTMENT_ID!, doctorId: STAFF_TEST_DOCTOR_ID! },
+        { hospitalId: STAFF_TEST_HOSPITAL_ID!, accessToken },
+      );
 
       expect(typeof result.success).toBe('boolean');
       expect('message' in result).toBe(true);
       expect('tokenNo' in result).toBe(true);
       expect('status' in result).toBe(true);
-
-      authClient.stop();
     },
     30_000,
   );

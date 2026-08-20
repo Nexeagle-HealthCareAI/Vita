@@ -3,6 +3,9 @@ export interface CreateSessionInput {
   userId: string;
   role: 'ROLE_RECEPTIONIST' | 'ROLE_DOCTOR';
   consentGiven: boolean;
+  /** Forwarded from ticket.ts's SessionClaims -- see that file's doc comment. */
+  hospitalId?: string;
+  hmsAccessToken?: string;
 }
 
 export interface TurnAudioResult {
