@@ -33,17 +33,35 @@ export class HybridRetriever {
   }
 
   async search(query: string, topK = 5): Promise<HybridSearchResult[]> {
-    const queryVector = await this.embed(query);
-    // Qdrant's older `.search()` was superseded by the universal `.query()`
-    // endpoint (covers search/recommend/discover/hybrid in one call).
-    const dense = await this.qdrant.query(this.collection, {
-      query: queryVector,
-      limit: topK * 2,
-    });
     const sparse = this.bm25.search(tokenize(query), topK * 2);
 
+    let dense: { id: string; rank: number }[] = [];
+    try {
+      const queryVector = await this.embed(query);
+      // Qdrant's older `.search()` was superseded by the universal `.query()`
+      // endpoint (covers search/recommend/discover/hybrid in one call).
+      const result = await this.qdrant.query(this.collection, {
+        query: queryVector,
+        limit: topK * 2,
+      });
+      dense = result.points.map((d, rank) => ({ id: String(d.id), rank }));
+    } catch (err) {
+      // Degrade to sparse-only rather than failing the whole search -- the BM25 half
+      // above is already computed in-process (no network call at all), so a Qdrant
+      // outage/timeout (or an embedding failure) shouldn't take down
+      // search_vita_faq/search_hospital_reference entirely, just make results a bit
+      // less precise until it recovers.
+      console.error(
+        JSON.stringify({
+          type: 'HYBRID_RETRIEVER_DENSE_SEARCH_FAILED',
+          collection: this.collection,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    }
+
     const fused = reciprocalRankFusion(
-      dense.points.map((d, rank) => ({ id: String(d.id), rank })),
+      dense,
       sparse.map((s, rank) => ({ id: s.id, rank })),
     );
 

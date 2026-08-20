@@ -192,6 +192,10 @@ export class HmsClient {
     private baseUrl: string,
     private apiKey: string,
     private fetchImpl: typeof fetch = fetch,
+    // Bounds every call below -- previously unbounded, so a hung/slow easyHMSAPI could
+    // freeze a live voice turn indefinitely (every method here is called synchronously
+    // mid-turn from apps/orchestrator/src/tools.ts/pipeline.ts).
+    private timeoutMs = Number(process.env.HMS_API_TIMEOUT_MS ?? 8_000),
   ) {}
 
   private async request<T>(path: string, init: RequestInit): Promise<T> {
@@ -204,6 +208,7 @@ export class HmsClient {
         ...(this.apiKey ? { 'X-Api-Key': this.apiKey } : {}),
         ...init.headers,
       },
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
     if (!res.ok) {
       throw new Error(`1HMS API ${path} failed: ${res.status} ${await res.text()}`);
@@ -230,6 +235,7 @@ export class HmsClient {
         Authorization: `Bearer ${staffAuth.accessToken}`,
         ...init.headers,
       },
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
     if (!res.ok) {
       throw new Error(`1HMS staff API ${path} failed: ${res.status} ${await res.text()}`);

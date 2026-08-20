@@ -143,6 +143,22 @@ describe('HmsClient', () => {
     expect((init as RequestInit).headers).not.toHaveProperty('X-Api-Key');
   });
 
+  it('attaches an AbortSignal on the public request path so a hung easyHMSAPI can never freeze a live turn indefinitely', async () => {
+    const fetchImpl = fakeFetch({ doctors: [], totalCount: 0 });
+    const client = new HmsClient('https://hms.internal', 'key', fetchImpl);
+    await client.findDoctors({});
+    const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect((init as RequestInit).signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('attaches an AbortSignal on the staff-auth request path too', async () => {
+    const fetchImpl = fakeFetch({ success: true, message: null, tokenNo: 1, status: 'READY' });
+    const client = new HmsClient('https://hms.internal', 'key', fetchImpl);
+    await client.markAppointmentArrived({ appointmentId: 'a-1', doctorId: 'd-1' }, { hospitalId: 'h-1', accessToken: 'tok' });
+    const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect((init as RequestInit).signal).toBeInstanceOf(AbortSignal);
+  });
+
   describe('markAppointmentArrived (staff-auth, real per-user forwarded JWT)', () => {
     const staffAuth: StaffAuthContext = { hospitalId: 'h-1', accessToken: 'real-user-token' };
 

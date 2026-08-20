@@ -1,5 +1,4 @@
-import { BinaryFrameType, decodeBinaryFrame, encodeBinaryFrame, PROTOCOL_VERSION } from '@vita/protocol';
-import type { ServerControlEvent } from '@vita/protocol';
+import { BinaryFrameType, decodeBinaryFrame, encodeBinaryFrame, PROTOCOL_VERSION, ServerControlEvent } from '@vita/protocol';
 import { JitterBufferPlayer } from './playback.js';
 import { computeRmsLevel } from './audioLevel.js';
 
@@ -248,12 +247,21 @@ export class TeraWebSDK {
       return;
     }
 
-    let msg: ServerControlEvent;
+    let parsed: unknown;
     try {
-      msg = JSON.parse(event.data as string);
+      parsed = JSON.parse(event.data as string);
     } catch {
       return; // ignore malformed frames rather than throwing on a hot path
     }
+    // Runtime-validated against the real wire schema, not just cast to it -- @vita/protocol
+    // exports ServerControlEvent as a zod schema specifically for this. A malformed/drifted
+    // payload (a field renamed on one side but not the other, an unexpected type) previously
+    // sailed through untyped and could crash a host app that trusted the declared TS shape
+    // (e.g. calling .trim() on a `text` that was actually undefined) -- now it's dropped the
+    // same way a JSON.parse failure already is, one line above.
+    const result = ServerControlEvent.safeParse(parsed);
+    if (!result.success) return;
+    const msg = result.data;
 
     switch (msg.event) {
       case 'TRANSCRIPT':

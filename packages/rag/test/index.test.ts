@@ -37,4 +37,37 @@ describe('HybridRetriever', () => {
 
     expect(results).toEqual([]);
   });
+
+  it('degrades to sparse-only (BM25) results instead of failing entirely when Qdrant is unreachable', async () => {
+    const qdrant = { query: vi.fn().mockRejectedValue(new Error('ECONNREFUSED')) } as unknown as QdrantClient;
+    const embed = vi.fn().mockResolvedValue([0.1, 0.2, 0.3]);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const retriever = new HybridRetriever(qdrant, 'test-collection', embed);
+
+    retriever.indexCorpus([
+      { id: 'doc-1', text: 'What is Vita? Vita is a voice assistant.' },
+      { id: 'doc-2', text: 'Where is Vita hosted? On E2E Networks.' },
+    ]);
+
+    const results = await retriever.search('what is vita', 5);
+
+    expect(results.map((r) => r.id)).toContain('doc-1'); // BM25 alone still found it
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('HYBRID_RETRIEVER_DENSE_SEARCH_FAILED'));
+    errorSpy.mockRestore();
+  });
+
+  it('degrades to sparse-only results when the embedder itself fails, not just Qdrant', async () => {
+    const qdrant = fakeQdrant([{ id: 'doc-1', score: 0.9 }]);
+    const embed = vi.fn().mockRejectedValue(new Error('model load failed'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const retriever = new HybridRetriever(qdrant, 'test-collection', embed);
+
+    retriever.indexCorpus([{ id: 'doc-1', text: 'What is Vita? Vita is a voice assistant.' }]);
+
+    const results = await retriever.search('what is vita', 5);
+
+    expect(results.map((r) => r.id)).toContain('doc-1');
+    expect(qdrant.query).not.toHaveBeenCalled(); // never reached -- embed() failed first
+    errorSpy.mockRestore();
+  });
 });
