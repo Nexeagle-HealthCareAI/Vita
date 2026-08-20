@@ -42,6 +42,10 @@ export interface StreamSessionDeps {
   hms: HmsClient;
   faqRetriever?: HybridRetriever;
   hospitalReferenceRetriever?: HybridRetriever;
+  /** Shared, resolved-once-per-process roster text (see index.ts/doctorRoster.ts) --
+   * awaited here, not fetched here; see runTurn's rosterText param for why pipeline.ts
+   * never does this itself. */
+  rosterTextPromise: Promise<string | undefined>;
   streamingSttSessionFactory: () => StreamingSttSession;
   connectionGate: ConnectionOpenGate;
   connectTimeoutMs: number;
@@ -147,6 +151,8 @@ export class StreamSessionHandler {
 
     this.sendJson({ event: 'transcript.final', text });
 
+    const rosterText = await this.deps.rosterTextPromise;
+
     let result;
     try {
       result = await runTurn({
@@ -157,6 +163,7 @@ export class StreamSessionHandler {
         hms: this.deps.hms,
         faqRetriever: this.deps.faqRetriever,
         hospitalReferenceRetriever: this.deps.hospitalReferenceRetriever,
+        rosterText,
         // Sends each sentence's text+audio as soon as it's synthesized, instead of
         // waiting for the whole reply -- text message immediately followed by its own
         // binary audio frame, in that order, for every chunk including the last. That

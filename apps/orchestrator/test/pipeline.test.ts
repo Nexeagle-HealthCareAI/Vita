@@ -163,6 +163,54 @@ describe('runTurn — scripted conversation (golden-fixture style, per docs/BUIL
   });
 });
 
+describe('runTurn — rosterText (doctor-roster injection)', () => {
+  it('a rosterText param is injected into the seeded system prompt on the first turn', async () => {
+    const brain = mockGroq([{ content: 'ok', toolCalls: [] }]);
+    const result = await runTurn({
+      session: baseSession(),
+      transcript: 'hi',
+      brain,
+      tts: mockTts(),
+      hms: mockHms(),
+      rosterText: 'Anita Sharma (Cardiology)',
+    });
+
+    expect(result.updatedHistory[0]).toEqual(expect.objectContaining({ role: 'system' }));
+    expect(result.updatedHistory[0]!.content).toContain('Anita Sharma (Cardiology)');
+  });
+
+  it('omitted rosterText leaves the prompt byte-identical to today', async () => {
+    const brainWith = mockGroq([{ content: 'ok', toolCalls: [] }]);
+    const withRoster = await runTurn({ session: baseSession(), transcript: 'hi', brain: brainWith, tts: mockTts(), hms: mockHms(), rosterText: 'Anita Sharma' });
+
+    const brainWithout = mockGroq([{ content: 'ok', toolCalls: [] }]);
+    const withoutRoster = await runTurn({ session: baseSession(), transcript: 'hi', brain: brainWithout, tts: mockTts(), hms: mockHms() });
+
+    expect(withRoster.updatedHistory[0]!.content).not.toEqual(withoutRoster.updatedHistory[0]!.content);
+    expect(withoutRoster.updatedHistory[0]!.content).not.toContain('doctor roster');
+  });
+
+  it('rosterText is only applied on the very first turn, never re-injected mid-session', async () => {
+    const brain1 = mockGroq([{ content: 'ok', toolCalls: [] }]);
+    const turn1 = await runTurn({ session: baseSession(), transcript: 'hi', brain: brain1, tts: mockTts(), hms: mockHms(), rosterText: 'Anita Sharma' });
+
+    const session2 = { ...baseSession(), history: turn1.updatedHistory };
+    const brain2 = mockGroq([{ content: 'ok', toolCalls: [] }]);
+    const turn2 = await runTurn({
+      session: session2,
+      transcript: 'is dr patel around',
+      brain: brain2,
+      tts: mockTts(),
+      hms: mockHms(),
+      rosterText: 'Rajesh Kumar', // deliberately different -- must NOT overwrite turn 1's seeded prompt
+    });
+
+    expect(turn2.updatedHistory[0]!.content).toBe(turn1.updatedHistory[0]!.content);
+    expect(turn2.updatedHistory[0]!.content).toContain('Anita Sharma');
+    expect(turn2.updatedHistory[0]!.content).not.toContain('Rajesh Kumar');
+  });
+});
+
 describe('runTurn — round cap (a live call must never hang)', () => {
   it('stops after MAX_TOOL_ROUNDS and returns a safe fallback reply instead of looping forever', async () => {
     // Groq keeps requesting the same tool call every round, never producing a final answer.

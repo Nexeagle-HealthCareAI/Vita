@@ -75,6 +75,22 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     type: 'function',
     function: {
+      name: 'mark_appointment_arrived',
+      description:
+        'Check in a patient who has already booked an appointment, issuing their queue token -- e.g. "mark Mr. Sharma arrived", "check in token for appointment X". Only works for an appointment that already exists (use find_doctors/book_appointment first if it does not). Safe to retry -- calling this again for an already-checked-in appointment just returns their existing token, never issues a duplicate.',
+      parameters: {
+        type: 'object',
+        properties: {
+          appointmentId: { type: 'string' },
+          doctorId: { type: 'string' },
+        },
+        required: ['appointmentId', 'doctorId'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'search_vita_faq',
       description:
         'Answer generic questions about Vita itself -- what it is, what it can do, where it runs, who built it, what languages it understands, whether bookings are final, etc. Not for patient, doctor, or appointment data -- use the other tools for those.',
@@ -168,6 +184,8 @@ export async function executeTool(
           reason?: string;
         },
       );
+    case 'mark_appointment_arrived':
+      return hms.markAppointmentArrived(args as { appointmentId: string; doctorId: string });
     case 'search_vita_faq': {
       if (!faqRetriever) throw new UnknownToolError(name);
       const { query } = args as { query: string };

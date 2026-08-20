@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 // @ts-expect-error -- ioredis-mock has no bundled types
 import RedisMock from 'ioredis-mock';
 import { buildServer } from '../src/index.js';
@@ -156,5 +156,73 @@ describe('POST /session/:id/turn/audio', () => {
 
     expect(res.statusCode).toBe(404);
     expect(JSON.parse(res.body)).toEqual({ error: { code: 'SESSION_NOT_FOUND', message: 'session not found', recoverable: false } });
+  });
+});
+
+describe('doctor-roster injection (HOSPITAL_ID + DOCTOR_ROSTER_ENABLED)', () => {
+  afterEach(() => {
+    delete process.env.HOSPITAL_ID;
+    delete process.env.DOCTOR_ROSTER_ENABLED;
+  });
+
+  it('a configured HOSPITAL_ID reaches the seeded system prompt sent to brain.chat', async () => {
+    process.env.HOSPITAL_ID = 'hosp-1';
+    const brain = mockGroq([{ content: 'Sure, one moment.', toolCalls: [] }]);
+    const stt = mockStt('Is Dr. Patel around today?');
+    const hms = mockHms();
+    hms.getHospitalRoster = vi.fn().mockResolvedValue({
+      doctors: [{ doctorId: 'd-1', fullName: 'Anita Sharma', departmentName: 'Cardiology', specialtyCategory: null }],
+    });
+
+    const app = buildServer(new RedisMock(), { brain, stt, tts: mockTts(), hms });
+    await createSession(app);
+    await app.inject({
+      method: 'POST',
+      url: '/session/sess-1/turn/audio',
+      payload: Buffer.from([1, 2, 3]),
+      headers: { 'content-type': 'application/octet-stream' },
+    });
+
+    expect(hms.getHospitalRoster).toHaveBeenCalledWith({ hospitalId: 'hosp-1' });
+    const [history] = (brain.chat as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(history[0].content).toContain('Anita Sharma (Cardiology)');
+  });
+
+  it('no HOSPITAL_ID configured never calls getHospitalRoster, prompt unchanged', async () => {
+    const brain = mockGroq([{ content: 'Sure, one moment.', toolCalls: [] }]);
+    const stt = mockStt('Is Dr. Patel around today?');
+    const hms = mockHms();
+
+    const app = buildServer(new RedisMock(), { brain, stt, tts: mockTts(), hms });
+    await createSession(app);
+    await app.inject({
+      method: 'POST',
+      url: '/session/sess-1/turn/audio',
+      payload: Buffer.from([1, 2, 3]),
+      headers: { 'content-type': 'application/octet-stream' },
+    });
+
+    expect(hms.getHospitalRoster).not.toHaveBeenCalled();
+    const [history] = (brain.chat as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(history[0].content).not.toContain('doctor roster');
+  });
+
+  it('DOCTOR_ROSTER_ENABLED=false skips the fetch even with HOSPITAL_ID set', async () => {
+    process.env.HOSPITAL_ID = 'hosp-1';
+    process.env.DOCTOR_ROSTER_ENABLED = 'false';
+    const brain = mockGroq([{ content: 'ok', toolCalls: [] }]);
+    const stt = mockStt('hi');
+    const hms = mockHms();
+
+    const app = buildServer(new RedisMock(), { brain, stt, tts: mockTts(), hms });
+    await createSession(app);
+    await app.inject({
+      method: 'POST',
+      url: '/session/sess-1/turn/audio',
+      payload: Buffer.from([1, 2, 3]),
+      headers: { 'content-type': 'application/octet-stream' },
+    });
+
+    expect(hms.getHospitalRoster).not.toHaveBeenCalled();
   });
 });

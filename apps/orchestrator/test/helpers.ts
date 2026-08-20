@@ -65,6 +65,10 @@ export function mockHms() {
   hms.bookAppointment = vi
     .fn()
     .mockResolvedValue({ success: true, message: 'Your appointment request has been received.', appointmentId: 'a-1', patientId: 'p-1', isReminderSent: true });
+  // Harmless default (empty roster) -- doctorRoster.test.ts and pipeline.test.ts's
+  // rosterText cases override this directly, same pattern as findDoctors above.
+  hms.getHospitalRoster = vi.fn().mockResolvedValue({ doctors: [] });
+  hms.markAppointmentArrived = vi.fn().mockResolvedValue({ success: true, message: null, tokenNo: 1, status: 'READY' });
   return hms;
 }
 

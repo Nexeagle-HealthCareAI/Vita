@@ -2,7 +2,7 @@ import Fastify from 'fastify';
 import websocketPlugin from '@fastify/websocket';
 import { Redis as IORedis, type Redis } from 'ioredis';
 import { QdrantClient } from '@qdrant/js-client-rest';
-import { HmsClient } from '@vita/mcp-1hms';
+import { HmsClient, HmsAuthClient } from '@vita/mcp-1hms';
 import {
   HybridRetriever,
   LocalEmbedder,
@@ -24,6 +24,7 @@ import { runTurn, type RunTurnResult } from './pipeline.js';
 import { StreamSessionHandler } from './streamSession.js';
 import { ConnectionOpenGate } from './connectionGate.js';
 import { SarvamRealtimeSttSession, buildSarvamRealtimeUrl } from './stt/sarvamRealtime.js';
+import { fetchRosterText } from './doctorRoster.js';
 
 const PORT = Number(process.env.ORCHESTRATOR_PORT ?? 8081);
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
@@ -57,9 +58,50 @@ export function buildServer(
   const tts: TtsProvider =
     clients?.tts ??
     new SarvamTtsProvider(process.env.SARVAM_API_KEY ?? '', process.env.SARVAM_TTS_ENDPOINT ?? 'https://api.sarvam.ai/text-to-speech');
+  const HOSPITAL_ID = process.env.HOSPITAL_ID;
+
+  // Vita's staff-equivalent credential (see hmsAuthClient.ts's file header and the plan's
+  // incident-response section) -- ships DARK, unlike every other HMS_API_* call today: a
+  // misconfigured/leaked credential here can mutate real appointment/patient data with real
+  // staff permission, so this needs explicit per-environment opt-in (VITA_HMS_STAFF_AUTH_ENABLED
+  // must be the literal string 'true'), not just an unset var quietly falling back to "on".
+  // Guarded on `!clients?.hms` so tests that override hms (mockHms(), every existing test)
+  // never construct a real HmsAuthClient -- its constructor fires an un-mocked background
+  // fetch() the moment it exists, which no test double here provides a mock for.
+  const VITA_HMS_STAFF_AUTH_ENABLED = process.env.VITA_HMS_STAFF_AUTH_ENABLED === 'true';
+  const VITA_HMS_STAFF_LOGIN = process.env.VITA_HMS_STAFF_LOGIN;
+  const VITA_HMS_STAFF_PASSWORD = process.env.VITA_HMS_STAFF_PASSWORD;
+  const hmsStaffAuthClient =
+    !clients?.hms && VITA_HMS_STAFF_AUTH_ENABLED && HOSPITAL_ID && VITA_HMS_STAFF_LOGIN && VITA_HMS_STAFF_PASSWORD
+      ? new HmsAuthClient(
+          process.env.HMS_API_BASE_URL ?? 'http://localhost:5000',
+          { login: VITA_HMS_STAFF_LOGIN, password: VITA_HMS_STAFF_PASSWORD },
+          Number(process.env.VITA_HMS_STAFF_TOKEN_REFRESH_INTERVAL_MS ?? 86_400_000),
+        )
+      : undefined;
   const hms =
     clients?.hms ??
-    new HmsClient(process.env.HMS_API_BASE_URL ?? 'http://localhost:5000', process.env.HMS_API_KEY ?? '');
+    new HmsClient(process.env.HMS_API_BASE_URL ?? 'http://localhost:5000', process.env.HMS_API_KEY ?? '', undefined, {
+      authClient: hmsStaffAuthClient,
+      hospitalId: HOSPITAL_ID,
+    });
+
+  // Instant single-env-var rollback, independent of HOSPITAL_ID itself (which other
+  // future features may reuse) -- matches SESSION_RESUME_ENABLED's `!== 'false'` idiom:
+  // this feature's failure mode is fully benign (an unresolved/failed fetch just leaves
+  // the system prompt exactly as it was before this feature existed), so default ON is
+  // correct, same reasoning gateway/src/index.ts's sessionResumeEnabled() documents.
+  const DOCTOR_ROSTER_ENABLED = process.env.DOCTOR_ROSTER_ENABLED !== 'false';
+  // Doctor-roster prefetch for phonetic-name-correction context (see doctorRoster.ts) --
+  // kicked off HERE, once per process, but deliberately NOT awaited: buildServer() itself
+  // must stay synchronous (many existing tests call it without `await`, same reason the
+  // QdrantClient/HybridRetriever construction below is sync). Every route below awaits
+  // this SAME promise lazily, right before it's needed -- so a slow/failed fetch is paid
+  // at most once per process, never once per request, and buildSystemPrompt only ever
+  // sees an already-resolved string or undefined.
+  const rosterTextPromise: Promise<string | undefined> =
+    HOSPITAL_ID && DOCTOR_ROSTER_ENABLED ? fetchRosterText(hms, HOSPITAL_ID) : Promise.resolve(undefined);
+
   // FAQ + hospital-reference retrieval (search_vita_faq / search_hospital_reference tools
   // -- see tools.ts). Constructed synchronously and cheaply: QdrantClient's constructor
   // doesn't connect eagerly, LocalEmbedder's model load is lazy (first real embed()
@@ -286,7 +328,7 @@ export function buildServer(
       return reply.code(400).send({ error: 'transcript is required' });
     }
 
-    const result = await runTurn({ session, transcript, brain, tts, hms, faqRetriever, hospitalReferenceRetriever });
+    const result = await runTurn({ session, transcript, brain, tts, hms, faqRetriever, hospitalReferenceRetriever, rosterText: await rosterTextPromise });
     const formFields = computeFormFields(session, result);
     await sessions.update(id, { history: result.updatedHistory, slots: result.updatedSlots, turnState: 'IDLE' });
     if (Object.keys(formFields).length > 0) {
@@ -354,7 +396,7 @@ export function buildServer(
 
     let result;
     try {
-      result = await runTurn({ session, transcript, brain, tts, hms, faqRetriever, hospitalReferenceRetriever });
+      result = await runTurn({ session, transcript, brain, tts, hms, faqRetriever, hospitalReferenceRetriever, rosterText: await rosterTextPromise });
     } catch (err) {
       recordAuditEvent({
         ts: Date.now(),
@@ -411,6 +453,7 @@ export function buildServer(
           hms,
           faqRetriever,
           hospitalReferenceRetriever,
+          rosterTextPromise,
           streamingSttSessionFactory,
           connectionGate,
           connectTimeoutMs: Number(process.env.SARVAM_CONNECT_TIMEOUT_MS ?? 1800),

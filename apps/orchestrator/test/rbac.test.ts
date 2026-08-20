@@ -21,6 +21,14 @@ describe('RBAC tool permissions', () => {
     expect(() => assertToolPermission('book_appointment', 'ROLE_DOCTOR')).toThrow(ForbiddenError);
   });
 
+  it('allows a receptionist to mark an appointment arrived', () => {
+    expect(() => assertToolPermission('mark_appointment_arrived', 'ROLE_RECEPTIONIST')).not.toThrow();
+  });
+
+  it('denies a doctor calling mark_appointment_arrived (out of scope for that role)', () => {
+    expect(() => assertToolPermission('mark_appointment_arrived', 'ROLE_DOCTOR')).toThrow(ForbiddenError);
+  });
+
   it('denies any role for an unknown tool (deny-by-default)', () => {
     expect(() => assertToolPermission('delete_all_patients', 'ROLE_DOCTOR')).toThrow(
       ForbiddenError,
@@ -47,6 +55,11 @@ describe('isToolAllowed (non-throwing counterpart, used for upfront filtering)',
   it('mirrors assertToolPermission for a receptionist-only tool', () => {
     expect(isToolAllowed('book_appointment', 'ROLE_RECEPTIONIST')).toBe(true);
     expect(isToolAllowed('book_appointment', 'ROLE_DOCTOR')).toBe(false);
+  });
+
+  it('mirrors assertToolPermission for mark_appointment_arrived', () => {
+    expect(isToolAllowed('mark_appointment_arrived', 'ROLE_RECEPTIONIST')).toBe(true);
+    expect(isToolAllowed('mark_appointment_arrived', 'ROLE_DOCTOR')).toBe(false);
   });
 
   it('is deny-by-default for an unknown tool', () => {

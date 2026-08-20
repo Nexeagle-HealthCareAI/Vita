@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { HmsClient } from '../src/hmsClient.js';
+import { HmsAuthClient } from '../src/hmsAuthClient.js';
 
 /**
  * Contract test: hits a REAL, live easyHMSAPI instance (not a mock) and asserts the
@@ -20,6 +21,22 @@ import { HmsClient } from '../src/hmsClient.js';
  */
 const BASE_URL = process.env.HMS_API_BASE_URL ?? 'http://151.185.45.77:5001';
 const API_KEY = process.env.HMS_API_KEY ?? '';
+
+// Staff-auth contract case (markAppointmentArrived) needs a REAL provisioned
+// VitaServiceAccount credential plus a stable, pre-existing (non-PRE_APPOINTMENT) dev
+// appointment to target -- neither can be created/discovered by this test itself (unlike
+// bookAppointment above, mark-arrived can't safely manufacture its own disposable fixture
+// without also faking a realistic prior booking flow). Skips entirely until an operator has
+// provisioned the per-hospital Vita service User (see
+// easyHMSDatabase/db/data/seed/seed_vita_service_role.sql's doc comment) and set these.
+const STAFF_LOGIN = process.env.VITA_HMS_STAFF_LOGIN;
+const STAFF_PASSWORD = process.env.VITA_HMS_STAFF_PASSWORD;
+const STAFF_TEST_APPOINTMENT_ID = process.env.VITA_HMS_STAFF_TEST_APPOINTMENT_ID;
+const STAFF_TEST_DOCTOR_ID = process.env.VITA_HMS_STAFF_TEST_DOCTOR_ID;
+const STAFF_TEST_HOSPITAL_ID = process.env.VITA_HMS_STAFF_TEST_HOSPITAL_ID;
+const staffContractConfigured = Boolean(
+  STAFF_LOGIN && STAFF_PASSWORD && STAFF_TEST_APPOINTMENT_ID && STAFF_TEST_DOCTOR_ID && STAFF_TEST_HOSPITAL_ID,
+);
 
 // Obviously-fake, greppable patient identity for the one real write this file performs
 // (bookAppointment) -- anyone auditing the dev DB's appointments/patients tables can
@@ -79,6 +96,27 @@ describe('HmsClient contract (real easyHMSAPI)', () => {
   );
 
   it(
+    'getHospitalRoster returns the real /public/doctors/roster shape',
+    async () => {
+      const client = new HmsClient(BASE_URL, API_KEY);
+      const { doctors } = await client.findDoctors({ pageSize: 1 });
+      expect(doctors.length).toBeGreaterThan(0);
+      const hospitalId = doctors[0]!.hospitalId;
+
+      const result = await client.getHospitalRoster({ hospitalId });
+
+      expect(Array.isArray(result.doctors)).toBe(true);
+      expect(result.doctors.length).toBeGreaterThan(0);
+      const doctor = result.doctors[0]!;
+      expect(typeof doctor.doctorId).toBe('string');
+      expect(typeof doctor.fullName).toBe('string');
+      expect('departmentName' in doctor).toBe(true);
+      expect('specialtyCategory' in doctor).toBe(true);
+    },
+    30_000,
+  );
+
+  it(
     'bookAppointment creates a real (obviously-fake, greppable) request and returns the real response shape',
     async () => {
       const client = new HmsClient(BASE_URL, API_KEY);
@@ -99,6 +137,27 @@ describe('HmsClient contract (real easyHMSAPI)', () => {
       expect('appointmentId' in result).toBe(true);
       expect('patientId' in result).toBe(true);
       expect(typeof result.isReminderSent).toBe('boolean');
+    },
+    30_000,
+  );
+
+  it.skipIf(!staffContractConfigured)(
+    'markAppointmentArrived returns the real /queue/{doctorId}/mark-arrived shape (staff-auth) -- idempotent, safe to re-run',
+    async () => {
+      const authClient = new HmsAuthClient(BASE_URL, { login: STAFF_LOGIN!, password: STAFF_PASSWORD! }, 86_400_000);
+      const client = new HmsClient(BASE_URL, API_KEY, undefined, { authClient, hospitalId: STAFF_TEST_HOSPITAL_ID });
+
+      const result = await client.markAppointmentArrived({
+        appointmentId: STAFF_TEST_APPOINTMENT_ID!,
+        doctorId: STAFF_TEST_DOCTOR_ID!,
+      });
+
+      expect(typeof result.success).toBe('boolean');
+      expect('message' in result).toBe(true);
+      expect('tokenNo' in result).toBe(true);
+      expect('status' in result).toBe(true);
+
+      authClient.stop();
     },
     30_000,
   );

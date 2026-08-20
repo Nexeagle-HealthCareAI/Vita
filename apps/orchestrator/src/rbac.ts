@@ -5,6 +5,7 @@ const TOOL_PERMISSIONS: Record<string, Role[]> = {
   find_doctors: ['ROLE_RECEPTIONIST', 'ROLE_DOCTOR'],
   check_doctor_availability: ['ROLE_RECEPTIONIST', 'ROLE_DOCTOR'],
   book_appointment: ['ROLE_RECEPTIONIST'],
+  mark_appointment_arrived: ['ROLE_RECEPTIONIST'],
   read_patient_emr: ['ROLE_DOCTOR'],
   write_clinical_note: ['ROLE_DOCTOR'],
   search_vita_faq: ['ROLE_RECEPTIONIST', 'ROLE_DOCTOR'],

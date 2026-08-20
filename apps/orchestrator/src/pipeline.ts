@@ -39,11 +39,17 @@ const SHARED_OUTRO =
   'argument either -- if you do not know a required value, ask the caller for it rather ' +
   'than guessing.';
 
+const ROSTER_PREFIX =
+  "This hospital's current doctor roster (for correcting a mis-transcribed name before " +
+  'calling find_doctors -- never read this list aloud): ';
+
 /** Role-scoped system prompt -- upfront RBAC's other half (alongside toolSchemasForRole
  * in tools.ts). Called once per session (see runTurn below: only seeded on a brand-new
- * session, since session.role never changes for a session's lifetime). */
-function buildSystemPrompt(role: Role): string {
-  return SHARED_INTRO + (isToolAllowed('book_appointment', role) ? BOOKING_FRAGMENT : '') + SHARED_OUTRO;
+ * session, since session.role never changes for a session's lifetime). `rosterText` is
+ * plain injected data (see doctorRoster.ts) -- this function still does zero I/O itself. */
+function buildSystemPrompt(role: Role, rosterText?: string): string {
+  const roster = rosterText ? `${ROSTER_PREFIX}${rosterText}. ` : '';
+  return SHARED_INTRO + roster + (isToolAllowed('book_appointment', role) ? BOOKING_FRAGMENT : '') + SHARED_OUTRO;
 }
 
 function modelForRole(role: DialogueSession['role']): string {
@@ -220,6 +226,9 @@ export async function runTurn(opts: {
   faqRetriever?: HybridRetriever;
   /** Same reasoning as faqRetriever above -- powers search_hospital_reference. */
   hospitalReferenceRetriever?: HybridRetriever;
+  /** Resolved once per process (see index.ts/doctorRoster.ts), passed in as plain data --
+   * only ever used on a brand-new session's first turn, same as buildSystemPrompt itself. */
+  rosterText?: string;
   /** Optional -- when provided, streams the reply sentence-by-sentence via this callback
    * as each sentence is synthesized (the real-time WS path). Absent for every HTTP JSON
    * route, which keeps runTurn's behavior byte-for-byte identical to before streaming
@@ -230,7 +239,7 @@ export async function runTurn(opts: {
    * onReplyChunk is also provided. */
   isAborted?: () => boolean;
 }): Promise<RunTurnResult> {
-  const { session, transcript, brain, tts, hms, faqRetriever, hospitalReferenceRetriever, onReplyChunk, isAborted } = opts;
+  const { session, transcript, brain, tts, hms, faqRetriever, hospitalReferenceRetriever, rosterText, onReplyChunk, isAborted } = opts;
   const model = modelForRole(session.role);
   // Upfront RBAC: the tool list offered to the model this turn never includes a tool
   // this role can't call (see tools.ts's toolSchemasForRole) -- computed once, since
@@ -245,7 +254,7 @@ export async function runTurn(opts: {
 
   const history: ChatMessage[] = session.history.length > 0
     ? [...session.history]
-    : [{ role: 'system', content: buildSystemPrompt(session.role) }];
+    : [{ role: 'system', content: buildSystemPrompt(session.role, rosterText) }];
   history.push({ role: 'user', content: transcript });
 
   if (!onReplyChunk) {

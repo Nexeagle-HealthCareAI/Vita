@@ -10,25 +10,28 @@ function mockHms() {
   client.findDoctors = vi.fn().mockResolvedValue({ doctors: [{ doctorId: 'd-1', fullName: 'Dr. Test' }], totalCount: 1 });
   client.checkDoctorAvailability = vi.fn().mockResolvedValue({ isAvailable: true, reason: null, shifts: [] });
   client.bookAppointment = vi.fn().mockResolvedValue({ success: true, message: null, appointmentId: 'a-1', patientId: 'p-1', isReminderSent: true });
+  client.markAppointmentArrived = vi.fn().mockResolvedValue({ success: true, message: null, tokenNo: 5, status: 'READY' });
   return client;
 }
 
 describe('toolSchemasForRole (upfront RBAC -- what gets offered to the model)', () => {
-  it('excludes book_appointment for ROLE_DOCTOR but includes everything else', () => {
+  it('excludes book_appointment and mark_appointment_arrived for ROLE_DOCTOR but includes everything else', () => {
     const names = toolSchemasForRole('ROLE_DOCTOR').map((s) => s.function.name);
     expect(names).not.toContain('book_appointment');
+    expect(names).not.toContain('mark_appointment_arrived');
     expect(names).toEqual(
       expect.arrayContaining(['find_doctors', 'check_doctor_availability', 'search_vita_faq', 'search_hospital_reference']),
     );
   });
 
-  it('includes every tool, including book_appointment, for ROLE_RECEPTIONIST', () => {
+  it('includes every tool, including book_appointment and mark_appointment_arrived, for ROLE_RECEPTIONIST', () => {
     const names = toolSchemasForRole('ROLE_RECEPTIONIST').map((s) => s.function.name);
     expect(names).toEqual(
       expect.arrayContaining([
         'find_doctors',
         'check_doctor_availability',
         'book_appointment',
+        'mark_appointment_arrived',
         'search_vita_faq',
         'search_hospital_reference',
       ]),
@@ -73,6 +76,22 @@ describe('executeTool', () => {
     const result = await executeTool('book_appointment', input, 'ROLE_RECEPTIONIST', hms);
     expect(result).toEqual({ success: true, message: null, appointmentId: 'a-1', patientId: 'p-1', isReminderSent: true });
     expect(hms.bookAppointment).toHaveBeenCalledWith(input);
+  });
+
+  it('dispatches mark_appointment_arrived to HmsClient.markAppointmentArrived (receptionist-only)', async () => {
+    const hms = mockHms();
+    const input = { appointmentId: 'a-1', doctorId: 'd-1' };
+    const result = await executeTool('mark_appointment_arrived', input, 'ROLE_RECEPTIONIST', hms);
+    expect(result).toEqual({ success: true, message: null, tokenNo: 5, status: 'READY' });
+    expect(hms.markAppointmentArrived).toHaveBeenCalledWith(input);
+  });
+
+  it('denies a doctor calling mark_appointment_arrived before ever calling HmsClient', async () => {
+    const hms = mockHms();
+    await expect(
+      executeTool('mark_appointment_arrived', { appointmentId: 'a-1', doctorId: 'd-1' }, 'ROLE_DOCTOR', hms),
+    ).rejects.toThrow(ForbiddenError);
+    expect(hms.markAppointmentArrived).not.toHaveBeenCalled();
   });
 
   it('rejects a tool name RBAC has never heard of before ever calling HmsClient', async () => {
