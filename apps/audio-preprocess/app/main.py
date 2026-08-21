@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 
 import numpy as np
@@ -13,9 +14,18 @@ from .vad import SileroVAD
 
 logger = logging.getLogger(__name__)
 
+# Real operational tuning knobs (unlike denoise.py's CONTEXT_MS, which stays a hardcoded
+# constant deliberately -- see that file's own docstring on why it was empirically swept
+# and validated, not something to casually reconfigure per deployment). A deployer might
+# reasonably want a different VAD sensitivity for a noisier clinic, or a different
+# session idle TTL, without touching the denoising pipeline itself.
+VAD_THRESHOLD = float(os.environ.get("VAD_THRESHOLD", "0.5"))
+SESSION_TTL_SECONDS = float(os.environ.get("AUDIO_PREPROCESS_SESSION_TTL_SECONDS", "120.0"))
+SESSION_SWEEP_INTERVAL_SECONDS = float(os.environ.get("AUDIO_PREPROCESS_SWEEP_INTERVAL_SECONDS", "30.0"))
+
 denoiser = Denoiser()
-vad = SileroVAD()
-registry = SessionRegistry(vad=vad, denoiser=denoiser)
+vad = SileroVAD(threshold=VAD_THRESHOLD)
+registry = SessionRegistry(vad=vad, denoiser=denoiser, ttl_seconds=SESSION_TTL_SECONDS)
 
 # 20ms @ 16kHz mono PCM16 -- the gateway's wire contract (RelayConfig.frameMs,
 # apps/gateway/src/relay.ts) never sends anything else. Enforced here, at the HTTP
@@ -43,7 +53,7 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("vad: failed to load Silero VAD -- falling back to energy-threshold heuristic")
 
-    registry.start_sweeper()
+    registry.start_sweeper(interval_seconds=SESSION_SWEEP_INTERVAL_SECONDS)
     yield
     registry.stop_sweeper()
 
