@@ -5,6 +5,10 @@
   "description": "Dialogue state manager: Redis session engine, RBAC, audit log, LLM/STT/TTS/MCP/RAG orchestration",
   "type": "module",
   "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./testing": "./dist/testing.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch --env-file=../../.env src/index.ts",

@@ -9,6 +9,7 @@ import { ConnectionRelay, type RelayConfig } from './relay.js';
 import { RelaySessionRegistry } from './relaySessionRegistry.js';
 import type { TurnBackendFactory } from './turnBackend.js';
 import { DefaultTurnBackendFactory, OrchestratorStreamClient } from './streamingTurnBackend.js';
+import { RateLimiter } from './rateLimiter.js';
 
 const JWT_SECRET = process.env.JWT_SIGNING_SECRET ?? 'change-me';
 const PORT = Number(process.env.GATEWAY_PORT ?? 8080);
@@ -65,6 +66,7 @@ export function buildServer(deps?: {
   orchestrator?: OrchestratorClient;
   backendFactory?: TurnBackendFactory;
   relaySessionRegistry?: RelaySessionRegistry;
+  ticketRateLimiter?: RateLimiter;
 }) {
   const orchestratorHttpUrl = process.env.ORCHESTRATOR_INTERNAL_URL ?? 'http://localhost:8081';
   const audioPreprocess =
@@ -76,6 +78,14 @@ export function buildServer(deps?: {
       streamingEnabled: process.env.STREAMING_STT_ENABLED === 'true',
       connectTimeoutMs: Number(process.env.STREAM_CONNECT_TIMEOUT_MS ?? 3000),
     });
+  // Bursty but generous -- protects this process from a runaway client/bot/retry-loop,
+  // not meant to throttle real reception-desk traffic. Global, not per-IP -- see
+  // rateLimiter.ts's own doc comment for why (this gateway sits behind a shared reverse
+  // proxy AND publishes its port directly on the host, so a per-IP scheme trusting
+  // X-Forwarded-For would be trivially spoofable by a direct caller).
+  const ticketRateLimiter =
+    deps?.ticketRateLimiter ??
+    new RateLimiter(Number(process.env.TICKET_RATE_LIMIT_CAPACITY ?? 30), Number(process.env.TICKET_RATE_LIMIT_REFILL_MS ?? 2000));
   const relaySessionRegistry = deps?.relaySessionRegistry ?? new RelaySessionRegistry();
   const relayConfig = relayConfigFromEnv();
 
@@ -102,6 +112,9 @@ export function buildServer(deps?: {
   // relay.ts's start(resumeInfo) for where it goes next. Real validation of the pair
   // happens only later, at the orchestrator's POST /session/:id/resume.
   app.post('/session/ticket', async (req, reply) => {
+    if (!ticketRateLimiter.tryConsume()) {
+      return reply.code(429).send({ error: 'too many requests' });
+    }
     const auth = req.headers.authorization;
     if (!auth?.startsWith('Bearer ')) {
       return reply.code(401).send({ error: 'missing bearer token' });

@@ -1,7 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { SarvamSttProvider } from '@vita/orchestrator/dist/stt/sarvam.js';
-import { SarvamTtsProvider } from '@vita/orchestrator/dist/tts/sarvam.js';
-import { GroqBrainProvider } from '@vita/orchestrator/dist/brain/groq.js';
+import { SarvamSttProvider, SarvamTtsProvider, GroqBrainProvider } from '@vita/orchestrator/testing';
 import { buildMockVendor } from '../src/mockVendor.js';
 
 /** Builds the real SarvamSttProvider/SarvamTtsProvider/GroqBrainProvider (the exact

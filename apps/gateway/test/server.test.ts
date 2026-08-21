@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import { buildServer, extractTicketProtocol } from '../src/index.js';
 import { redeemTicket } from '../src/ticket.js';
 import { OrchestratorClient } from '../src/orchestratorClient.js';
+import { RateLimiter } from '../src/rateLimiter.js';
 
 function fakeHealthyOrchestrator(healthy = true): OrchestratorClient {
   const client = Object.create(OrchestratorClient.prototype) as OrchestratorClient;
@@ -46,6 +47,37 @@ describe('gateway HTTP surface', () => {
     const app = buildServer();
     const res = await app.inject({ method: 'POST', url: '/session/ticket' });
     expect(res.statusCode).toBe(401);
+  });
+
+  describe('POST /session/ticket rate limiting', () => {
+    it('returns 429 once the bucket is exhausted, before ever checking the bearer token', async () => {
+      const limiter = new RateLimiter(2, 60_000); // capacity 2, no realistic refill within this test
+      const app = buildServer({ ticketRateLimiter: limiter });
+
+      const first = await app.inject({ method: 'POST', url: '/session/ticket' }); // no auth header -- would 401 if it got that far
+      const second = await app.inject({ method: 'POST', url: '/session/ticket' });
+      const third = await app.inject({ method: 'POST', url: '/session/ticket' });
+
+      expect(first.statusCode).toBe(401); // consumed a token, then rejected for the real reason (no auth)
+      expect(second.statusCode).toBe(401);
+      expect(third.statusCode).toBe(429); // bucket exhausted -- rejected before the auth check ever runs
+      limiter.stop();
+    });
+
+    it('a valid request still succeeds when under budget', async () => {
+      const limiter = new RateLimiter(5, 60_000);
+      const app = buildServer({ ticketRateLimiter: limiter });
+      const token = jwt.sign({ sub: 'user-1' }, JWT_SECRET);
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/session/ticket',
+        headers: { authorization: `Bearer ${token}` },
+      });
+
+      expect(res.statusCode).toBe(200);
+      limiter.stop();
+    });
   });
 
   describe('CORS (web-sdk is embedded in an arbitrary host app, rarely same-origin)', () => {
