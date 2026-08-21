@@ -169,10 +169,15 @@ jobs:
         run: |
           sleep 10
           for i in 1 2 3 4 5; do
-            S=$(curl -s -o /dev/null -w '%{http_code}' \
-                http://${{ secrets.E2E_VM_HOST_DEV }}:8080/healthz 2>/dev/null || echo 000)
+            RESPONSE=$(curl -s -w '\n%{http_code}' http://${{ secrets.E2E_VM_HOST_DEV }}:8080/healthz 2>/dev/null || printf '\n000')
+            S=$(echo "$RESPONSE" | tail -n1)
+            BODY=$(echo "$RESPONSE" | sed '$d')
             echo "Attempt $i — HTTP $S"
             [ "$S" = "200" ] && echo "✅ Vita gateway is up (dev)" && exit 0
+            # Body printed on every non-200 attempt -- /healthz now reports WHICH
+            # dependency is unreachable (redis vs. orchestrator), not just a bare status
+            # code, so this is diagnosable from the Actions log without VM SSH access.
+            echo "  Response body: $BODY"
             sleep 10
           done
           echo "❌ Health check failed after 5 attempts — check: docker compose -f ~/vita-deploy/docker-compose.prod.yml logs"
