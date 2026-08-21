@@ -30,6 +30,27 @@ def test_process_frame_silence():
     assert res.headers["X-Tera-Speech-Detected"] == "0"
 
 
+def test_process_frame_rejects_empty_body():
+    # Previously reached denoise.py's tail-slice (`window[-len(frame):]`), which for a
+    # zero-length frame returns the WHOLE context window instead of erroring -- a real,
+    # silent data-corruption bug this 400 closes off before it can happen.
+    res = client.post(f"/session/{SESSION_ID}/process", content=b"")
+    assert res.status_code == 400
+
+
+def test_process_frame_rejects_odd_length_body():
+    # An odd byte count can never parse as int16 -- previously an uncaught
+    # np.frombuffer ValueError (unhandled 500), not a clean 400.
+    res = client.post(f"/session/{SESSION_ID}/process", content=b"\x00" * 641)
+    assert res.status_code == 400
+
+
+def test_process_frame_rejects_oversized_frame():
+    oversized = np.zeros(640, dtype=np.int16)  # 2x the expected 320 samples
+    res = client.post(f"/session/{SESSION_ID}/process", content=oversized.tobytes())
+    assert res.status_code == 400
+
+
 def test_session_lifecycle_delete_is_idempotent():
     session_id = "lifecycle-session"
     silence = np.zeros(320, dtype=np.int16)

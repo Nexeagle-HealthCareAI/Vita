@@ -17,6 +17,15 @@ denoiser = Denoiser()
 vad = SileroVAD()
 registry = SessionRegistry(vad=vad, denoiser=denoiser)
 
+# 20ms @ 16kHz mono PCM16 -- the gateway's wire contract (RelayConfig.frameMs,
+# apps/gateway/src/relay.ts) never sends anything else. Enforced here, at the HTTP
+# boundary, since nothing downstream does: denoise.py's context-window tail-slice
+# (`denoised_window[-len(pcm16_frame):]`) silently returns the WRONG-length output for a
+# zero-length or oversized frame instead of erroring, and np.frombuffer raises an
+# uncaught ValueError (-> unhandled 500, not a clean 400) on an odd-length body.
+FRAME_SAMPLES = 320
+FRAME_BYTES = FRAME_SAMPLES * 2  # int16 = 2 bytes/sample
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -57,6 +66,11 @@ async def process_frame(session_id: str, request: Request) -> Response:
     keep state across the frames of one call instead of treating each one independently.
     """
     raw = await request.body()
+    if len(raw) != FRAME_BYTES:
+        return Response(
+            status_code=400,
+            content=f"expected exactly {FRAME_SAMPLES} PCM16 samples ({FRAME_BYTES} bytes), got {len(raw)} bytes".encode(),
+        )
     pcm16 = np.frombuffer(raw, dtype=np.int16)
 
     record = await registry.get_or_create(session_id)

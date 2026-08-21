@@ -97,6 +97,14 @@ Changes from v1.0 are marked **[NEW]** / **[CHANGED]**.
   HTTP internal API (`POST .../process` per 20ms frame, `DELETE .../{sessionId}` on
   teardown) -- not gRPC/WS as earlier drafts of this doc stated; validated against a
   real p95 latency budget for the per-frame call shape (see `apps/audio-preprocess/tests`).
+  Single-process, same limitation as the gateway above: `SessionRegistry` is an
+  in-memory dict keyed by sessionId, with no cross-process coordination
+  (`app/session_registry.py`'s own doc comment). If this is ever scaled to multiple
+  replicas without sticky routing, a session's frames landing on a different replica
+  mid-call silently reintroduces the isolated-frame denoising bug this service's own
+  `denoise.py` docstring describes fixing at length (a fresh, empty history/model-state
+  per replica, not an error) -- needs the same real design work called out above before
+  a second instance is ever deployed.
 - `apps/orchestrator` — Node/TS: Redis session state machine, RBAC, audit log, Groq/Sarvam/MCP/RAG orchestration.
 - `packages/mcp-1hms` — MCP server wrapping 1HMS APIs (`register_patient`, `check_slot_availability`, `book_appointment`).
 - `packages/rag` — ingestion + hybrid retrieval over Qdrant.
