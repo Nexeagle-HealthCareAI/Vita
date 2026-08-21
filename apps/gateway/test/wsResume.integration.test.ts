@@ -141,6 +141,13 @@ describe('gateway WS resume -- reconnecting into the same orchestrator session',
     sockets.push(wsB);
     await waitForSessionReady(wsB);
 
-    await vi.waitFor(() => expect(audioPreprocess.teardown).toHaveBeenCalledWith(readyA.sessionId), { timeout: 2000 });
+    // Connection A is evicted and torn down when B resumes the same session. The teardown
+    // key is now per-connection (see relay.ts's _connectionId), which this test can't name
+    // from out here -- but the stronger property is directly assertable: exactly ONE
+    // teardown fired (A's, not B's), and it was NOT keyed on the shared sessionId. Keying
+    // on sessionId is precisely the bug this fixed: it would have destroyed B's own live
+    // VAD/denoiser state at the moment B took over.
+    await vi.waitFor(() => expect(audioPreprocess.teardown).toHaveBeenCalledTimes(1), { timeout: 2000 });
+    expect(audioPreprocess.teardown).not.toHaveBeenCalledWith(readyA.sessionId);
   });
 });

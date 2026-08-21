@@ -222,7 +222,32 @@ export class StreamSessionHandler {
     // it silently. result.formFieldsThisTurn is pipeline.ts's own high-water-mark diff --
     // see RunTurnResult's doc comment for why it's not simply session.slots vs. updatedSlots.
     const formFields = isToolAllowed('book_appointment', session.permissions) ? result.formFieldsThisTurn : {};
-    await this.deps.sessions.update(session.sessionId, { history: result.updatedHistory, slots: result.updatedSlots, turnState: 'IDLE' });
+    // Fenced on the epoch this turn started against -- the batch routes' twin, see
+    // index.ts's /turn route and session.ts's update() doc comment. A superseded stream
+    // connection must not write its stale snapshot over a newer connection's completed
+    // turn just because its own socket happens to still be open.
+    const persisted = await this.deps.sessions.update(
+      session.sessionId,
+      { history: result.updatedHistory, slots: result.updatedSlots, turnState: 'IDLE' },
+      { expectedEpoch: session.epoch ?? 0 },
+    );
+    if (!persisted) {
+      recordAuditEvent({
+        ts: Date.now(),
+        sessionId: session.sessionId,
+        userId: session.userId,
+        role: session.persona,
+        action: 'turn_superseded',
+        outcome: 'denied',
+      });
+      this.sendJson({
+        event: 'turn.error',
+        code: 'SESSION_SUPERSEDED',
+        message: 'this session was resumed on a newer connection',
+        recoverable: false,
+      });
+      return;
+    }
     if (Object.keys(formFields).length > 0) {
       this.sendJson({ event: 'turn.form_autofill', data: formFields });
       recordAuditEvent({

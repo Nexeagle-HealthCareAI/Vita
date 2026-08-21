@@ -166,7 +166,11 @@ describe('ConnectionRelay', () => {
     expect(input.hmsAccessToken).toBeUndefined();
   });
 
-  it('threads the session id into every audioPreprocess.process call, not just the orchestrator call', async () => {
+  it('threads this CONNECTION id (not the shared session id) into every audioPreprocess.process call', async () => {
+    // Per-connection, deliberately: the VAD/denoiser models' state belongs to one
+    // continuous mic stream, not to a dialogue. Keying on sessionId would let two relays
+    // for one resumed session interleave into a single shared VAD record, and would let
+    // the loser's teardown destroy the winner's live state. See relay.ts's _connectionId.
     const audioPreprocess = fakeAudioPreprocess();
     const orchestrator = fakeOrchestrator();
     const relay = new ConnectionRelay({ audioPreprocess, orchestrator, backendFactory: fakeBackendFactory(orchestrator), claims: CLAIMS, send: () => {} });
@@ -175,7 +179,20 @@ describe('ConnectionRelay', () => {
     (audioPreprocess.process as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ frame: frame(1), speechDetected: false });
     await sendFrame(relay, frame(1));
 
-    expect(audioPreprocess.process).toHaveBeenCalledWith(expect.any(Uint8Array), 'sess-1');
+    expect(audioPreprocess.process).toHaveBeenCalledWith(expect.any(Uint8Array), relay.connectionId);
+    expect(relay.connectionId).not.toBe('sess-1');
+  });
+
+  it('two relays sharing one resumed sessionId get DIFFERENT audio-preprocess keys', async () => {
+    // The cross-talk case this keying exists to make structurally impossible.
+    const orchestrator = fakeOrchestrator();
+    const relayA = new ConnectionRelay({ audioPreprocess: fakeAudioPreprocess(), orchestrator, backendFactory: fakeBackendFactory(orchestrator), claims: CLAIMS, send: () => {} });
+    const relayB = new ConnectionRelay({ audioPreprocess: fakeAudioPreprocess(), orchestrator, backendFactory: fakeBackendFactory(orchestrator), claims: CLAIMS, send: () => {} });
+    await relayA.start();
+    await relayB.start();
+
+    expect(relayA.sessionId).toBe(relayB.sessionId); // same orchestrator session
+    expect(relayA.connectionId).not.toBe(relayB.connectionId); // but isolated audio state
   });
 
   it('a sub-threshold speech blip never arms, so silence afterward never ends an utterance', async () => {
@@ -664,17 +681,20 @@ describe('ConnectionRelay', () => {
   });
 
   describe('close() / audio-preprocess teardown', () => {
-    it('calls teardown(sessionId) and backend.close() exactly once when the session was established', async () => {
+    it('calls teardown(connectionId) and backend.close() exactly once when the session was established', async () => {
       const audioPreprocess = fakeAudioPreprocess();
       const orchestrator = fakeOrchestrator();
       const backendFactory = fakeBackendFactory(orchestrator);
       const relay = new ConnectionRelay({ audioPreprocess, orchestrator, backendFactory, claims: CLAIMS, send: () => {} });
       await relay.start();
+      const { connectionId } = relay; // capture before close() -- sessionId is nulled, this isn't
 
       relay.close();
 
       expect(audioPreprocess.teardown).toHaveBeenCalledTimes(1);
-      expect(audioPreprocess.teardown).toHaveBeenCalledWith('sess-1');
+      // Keyed on THIS connection, so tearing it down can't destroy another live
+      // connection's model state for the same resumed session.
+      expect(audioPreprocess.teardown).toHaveBeenCalledWith(connectionId);
       expect(vi.mocked(backendFactory.backends[0].close)).toHaveBeenCalledTimes(1);
     });
 

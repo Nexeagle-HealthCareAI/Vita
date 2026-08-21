@@ -225,6 +225,9 @@ export function buildServer(
       slots: {},
       history: [],
       resumeToken: crypto.randomUUID(),
+      // Starts at 1, never 0/undefined, so a session this code wrote is distinguishable
+      // from one persisted before the field existed (see DialogueSession.epoch).
+      epoch: 1,
       hospitalId: body.hospitalId,
       hmsAccessToken: body.hmsAccessToken,
     });
@@ -283,7 +286,9 @@ export function buildServer(
       outcome: 'success',
     });
 
-    return reply.send({ sessionId: rotated.sessionId, resumeToken: rotated.resumeToken });
+    // epoch returned so the resuming gateway can fence its own later turns against it
+    // (see B2's x-vita-session-epoch); harmless for a caller that ignores it.
+    return reply.send({ sessionId: rotated.sessionId, resumeToken: rotated.resumeToken, epoch: rotated.epoch ?? 0 });
   });
 
   app.post('/session/:id/tool-call', async (req, reply) => {
@@ -342,7 +347,28 @@ export function buildServer(
 
     const result = await runTurn({ session, transcript, brain, tts, hms, faqRetriever, hospitalReferenceRetriever, rosterText: await rosterTextPromise });
     const formFields = computeFormFields(session, result);
-    await sessions.update(id, { history: result.updatedHistory, slots: result.updatedSlots, turnState: 'IDLE' });
+    // expectedEpoch: the generation this turn STARTED against. runTurn takes seconds
+    // (Groq + tool rounds + TTS), and a resume landing in that window supersedes this
+    // connection -- writing our stale snapshot back would silently wipe whatever the new
+    // connection has completed since. See session.ts's update() doc comment.
+    const persisted = await sessions.update(
+      id,
+      { history: result.updatedHistory, slots: result.updatedSlots, turnState: 'IDLE' },
+      { expectedEpoch: session.epoch ?? 0 },
+    );
+    if (!persisted) {
+      recordAuditEvent({
+        ts: Date.now(),
+        sessionId: session.sessionId,
+        userId: session.userId,
+        role: session.persona,
+        action: 'turn_superseded',
+        outcome: 'denied',
+      });
+      return reply
+        .code(502)
+        .send({ error: { code: 'SESSION_SUPERSEDED', message: 'this session was resumed on a newer connection', recoverable: false } });
+    }
     if (Object.keys(formFields).length > 0) {
       recordAuditEvent({
         ts: Date.now(),
@@ -422,7 +448,26 @@ export function buildServer(
     }
 
     const formFields = computeFormFields(session, result);
-    await sessions.update(id, { history: result.updatedHistory, slots: result.updatedSlots, turnState: 'IDLE' });
+    // See the /turn route above for why the write is fenced on the epoch this turn started
+    // against.
+    const persisted = await sessions.update(
+      id,
+      { history: result.updatedHistory, slots: result.updatedSlots, turnState: 'IDLE' },
+      { expectedEpoch: session.epoch ?? 0 },
+    );
+    if (!persisted) {
+      recordAuditEvent({
+        ts: Date.now(),
+        sessionId: id,
+        userId: session.userId,
+        role: session.persona,
+        action: 'turn_superseded',
+        outcome: 'denied',
+      });
+      return reply
+        .code(502)
+        .send({ error: { code: 'SESSION_SUPERSEDED', message: 'this session was resumed on a newer connection', recoverable: false } });
+    }
     if (Object.keys(formFields).length > 0) {
       recordAuditEvent({
         ts: Date.now(),

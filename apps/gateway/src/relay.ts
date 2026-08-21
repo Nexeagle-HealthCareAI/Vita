@@ -94,6 +94,19 @@ export class ConnectionRelay {
 
   private state: RelayState = 'LISTENING';
   private _sessionId: string | null = null;
+  /**
+   * Key for this connection's audio-preprocess state (Silero VAD + DeepFilterNet), which
+   * is per-CONNECTION, deliberately NOT per-orchestrator-session.
+   *
+   * Those models' state is a property of one continuous audio stream from one mic, not of
+   * a dialogue. Keying on sessionId (as this used to) meant a resumed connection inherited
+   * the previous connection's model state across an arbitrary gap -- different gain,
+   * different room, possibly minutes later -- and, worse, that two relays for the same
+   * session would interleave two independent audio streams into ONE VAD/denoiser record
+   * (apps/audio-preprocess/app/session_registry.py keys strictly on whatever id it's
+   * given), with the loser's teardown then destroying the winner's live state.
+   */
+  private readonly _connectionId: string = randomUUID();
   private backend: TurnBackend | null = null;
   /** Set synchronously by onBackendError's non-recoverable branch -- distinct from
    * _sessionId, which deliberately stays valid until the socket's real 'close' event runs
@@ -168,6 +181,13 @@ export class ConnectionRelay {
    * RelaySessionRegistry without changing start()'s Promise<boolean> contract. */
   get sessionId(): string | null {
     return this._sessionId;
+  }
+
+  /** Read-only accessor for this connection's audio-preprocess key (see _connectionId).
+   * Stable for the relay's whole lifetime, unlike sessionId. Exposed so tests can assert
+   * the exact key rather than degrading to expect.any(String). */
+  get connectionId(): string {
+    return this._connectionId;
   }
 
   async start(resumeInfo?: ResumeIntent): Promise<boolean> {
@@ -282,11 +302,12 @@ export class ConnectionRelay {
     if (this.bargeInTimer) clearTimeout(this.bargeInTimer);
     if (this.helloTimer) clearTimeout(this.helloTimer);
     if (this._sessionId) {
-      // Fire-and-forget, same pattern as start()'s call below -- frees this session's
-      // model state in audio-preprocess promptly rather than waiting out its TTL
-      // safety net. Capture the id before clearing it.
-      const sessionId = this._sessionId;
-      void this.deps.audioPreprocess.teardown(sessionId).catch((err) => {
+      // Fire-and-forget, same pattern as start()'s call below -- frees THIS CONNECTION's
+      // model state in audio-preprocess promptly rather than waiting out its TTL safety
+      // net. Keyed on _connectionId (see that field's doc comment), so tearing this
+      // connection down can never destroy a different, still-live connection's state --
+      // which is exactly what happened when this was keyed on the shared sessionId.
+      void this.deps.audioPreprocess.teardown(this._connectionId).catch((err) => {
         this.deps.log?.warn({ err }, 'relay: audio-preprocess teardown failed');
       });
       this.backend?.close();
@@ -331,7 +352,7 @@ export class ConnectionRelay {
   }
 
   private async processListeningFrame(frame: Uint8Array): Promise<void> {
-    const { frame: denoised, speechDetected } = await this.deps.audioPreprocess.process(frame, this._sessionId!);
+    const { frame: denoised, speechDetected } = await this.deps.audioPreprocess.process(frame, this._connectionId);
 
     if (!this.accumulating) {
       if (!speechDetected) {
@@ -394,7 +415,7 @@ export class ConnectionRelay {
   private async processSpeakingFrame(frame: Uint8Array): Promise<void> {
     if (!this.config.bargeInEnabled || !this.bargeInArmed) return;
 
-    const { speechDetected } = await this.deps.audioPreprocess.process(frame, this._sessionId!);
+    const { speechDetected } = await this.deps.audioPreprocess.process(frame, this._connectionId);
     if (speechDetected) {
       this.speechRunMs += this.config.frameMs;
     } else {

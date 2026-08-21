@@ -36,6 +36,21 @@ export interface DialogueSession {
    * are in use. Also the source `permissions` above is resolved from -- see permissions.ts. */
   hospitalId?: string;
   hmsAccessToken?: string;
+  /** Monotonic generation, incremented on every successful resume (see
+   * rotateResumeToken). Its job is to fence a SUPERSEDED connection's write: runTurn
+   * snapshots history/slots and the caller writes the result back seconds later, so a
+   * stale relay whose turn was already in flight when a resume landed would otherwise
+   * clobber the new connection's completed turn (see update()'s expectedEpoch).
+   *
+   * Deliberately NOT resumeToken, even though that already rotates on resume: resumeToken
+   * is a real credential (it's sent to the browser in SESSION_READY, and enables session
+   * takeover), whereas an integer generation grants nothing and is safe to log freely --
+   * which matters because the fence value has to ride the stream route's URL, and this
+   * orchestrator runs Fastify({ logger: true }).
+   *
+   * Optional: sessions already in Redis when this field shipped read as undefined, which
+   * every comparison below treats as 0. */
+  epoch?: number;
   updatedAt: number;
 }
 
@@ -63,6 +78,46 @@ function getEncryptionKey(): Buffer | null {
  */
 export class SessionStore {
   constructor(private redis: Redis) {}
+
+  /** In-flight serialization chain per sessionId -- see withLock(). */
+  private readonly chains = new Map<string, Promise<unknown>>();
+
+  /**
+   * Serializes get -> compare -> persist for one sessionId, so a stale in-flight turn
+   * can't slip its write in between a live turn's own read and write (the read-modify-
+   * write in update()/rotateResumeToken() is otherwise a lost-update vector regardless of
+   * epochs). Deliberately wraps ONLY the ~2 Redis ops, never runTurn -- so the resume
+   * route never head-of-line-blocks behind a 4-second turn.
+   *
+   * Same throw-safe promise-chain shape as apps/gateway/src/relay.ts's frameQueue rather
+   * than a hand-rolled mutex: a rejected body can't wedge the chain, because the next
+   * link attaches to the settled promise either way. The map entry is deleted once the
+   * chain it owns settles, so this never grows unbounded.
+   *
+   * Correct because this orchestrator runs as a single container (docker-compose.prod.yml)
+   * -- the same honesty as the gateway's RelaySessionRegistry. The epoch comparison below
+   * is the part that stays correct if that ever changes.
+   */
+  private withLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+    const prior = this.chains.get(sessionId) ?? Promise.resolve();
+    // `.then(fn, fn)` so this link runs whether or not the prior one rejected -- a failed
+    // write must never wedge every subsequent turn for that session.
+    const run = prior.then(fn, fn);
+    // A never-rejecting view of "this link finished", so the next link chains cleanly and
+    // an unhandled rejection can't escape from the stored tail.
+    const settled = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.chains.set(sessionId, settled);
+    void settled.then(() => {
+      // Identity-checked delete -- only drop the entry if we're still the tail, since
+      // something newer may have queued behind us. Same reasoning as the gateway's
+      // RelaySessionRegistry.unregister().
+      if (this.chains.get(sessionId) === settled) this.chains.delete(sessionId);
+    });
+    return run;
+  }
 
   private keys(sessionId: string): string[] {
     return [`${VITA_SESSION_PREFIX}${sessionId}`, `${LEGACY_SESSION_PREFIX}${sessionId}`];
@@ -128,15 +183,49 @@ export class SessionStore {
    * Single-use-per-resume: closes the replay window on a captured sessionId+token pair,
    * mirroring ticket.ts's single-use ticket. */
   async rotateResumeToken(sessionId: string): Promise<DialogueSession | null> {
-    const session = await this.get(sessionId);
-    if (!session) return null;
-    return this.persist({ ...session, resumeToken: randomUUID() });
+    return this.withLock(sessionId, async () => {
+      const session = await this.get(sessionId);
+      if (!session) return null;
+      // Epoch bumped in the SAME persist() as the token rotation -- there is deliberately
+      // no window where the token rotated but the fence didn't, which would let a
+      // superseded connection keep writing.
+      return this.persist({ ...session, resumeToken: randomUUID(), epoch: (session.epoch ?? 0) + 1 });
+    });
   }
 
-  async update(sessionId: string, patch: Partial<DialogueSession>): Promise<DialogueSession | null> {
-    const current = await this.get(sessionId);
-    if (!current) return null;
-    return this.persist({ ...current, ...patch });
+  /**
+   * `expectedEpoch` omitted => unconditional write, byte-identical to this method's
+   * behavior before the fence existed (every pre-existing caller and test relies on that).
+   *
+   * Supplied and mismatched => returns null and writes NOTHING: the session was resumed
+   * on another connection while this caller's turn was running, so this write is a stale
+   * snapshot that would clobber the newer connection's completed turn. Note the failure
+   * is quiet by construction -- `update()` merges a patch, so fields absent from it
+   * (resumeToken, epoch) survive a stale write and nothing downstream looks corrupted;
+   * only history/slots/turnState silently regress. That's exactly why the caller must
+   * check for null and surface it (see index.ts's SESSION_SUPERSEDED).
+   */
+  async update(
+    sessionId: string,
+    patch: Partial<DialogueSession>,
+    opts?: { expectedEpoch?: number },
+  ): Promise<DialogueSession | null> {
+    return this.withLock(sessionId, async () => {
+      const current = await this.get(sessionId);
+      if (!current) return null;
+      if (opts?.expectedEpoch !== undefined && (current.epoch ?? 0) !== opts.expectedEpoch) {
+        console.warn(
+          JSON.stringify({
+            type: 'SESSION_WRITE_FENCED',
+            sessionId,
+            expectedEpoch: opts.expectedEpoch,
+            actualEpoch: current.epoch ?? 0,
+          }),
+        );
+        return null;
+      }
+      return this.persist({ ...current, ...patch });
+    });
   }
 
   async destroy(sessionId: string): Promise<void> {
