@@ -1,0 +1,24 @@
+# Keeps the build context small and independent of local/CI state that no Dockerfile
+# here ever needs -- both apps/gateway/Dockerfile and apps/orchestrator/Dockerfile use
+# `context: .` (the whole repo root, see deploy.yml), so without this every build sends
+# the full node_modules/git history/build output to the Docker daemon on every build.
+node_modules
+**/node_modules
+**/dist
+**/build
+**/.turbo
+**/coverage
+**/test-results
+**/playwright-report
+.git
+.github
+.vscode
+.idea
+*.log
+.env
+.env.*
+!.env.example
+docs
+apps/audio-preprocess/.venv
+apps/audio-preprocess/__pycache__
+apps/audio-preprocess/.pytest_cache
