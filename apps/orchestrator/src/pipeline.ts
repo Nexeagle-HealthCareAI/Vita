@@ -415,6 +415,15 @@ export async function runTurn(opts: {
   }
 
   let gotFinalAnswer = false;
+  // Set on a brain.chatStream() failure mid-round (network drop, our own
+  // AbortSignal.timeout firing, etc.) -- previously such a failure propagated straight
+  // out of runTurn, rejecting the whole call. The caller's catch block
+  // (streamSession.ts's handleFinalTranscript) never persists history/slots on that
+  // path, so anything already spoken via onReplyChunk this turn (already synthesized,
+  // already played to the caller) would silently vanish from the model's own memory on
+  // the next turn. Treated the same as a TTS failure: stop generating, but still return
+  // everything genuinely spoken so far so the caller can persist it.
+  let brainFailure: string | undefined;
 
   roundLoop: for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     if (isAborted?.()) break;
@@ -423,19 +432,24 @@ export async function runTurn(opts: {
     let sentenceBuffer = '';
     let toolCalls: ToolCall[] = [];
 
-    for await (const streamChunk of brain.chatStream(history, availableTools, model)) {
-      if (streamChunk.contentDelta) {
-        content += streamChunk.contentDelta;
-        sentenceBuffer += streamChunk.contentDelta;
-        const { complete, remainder } = splitCompletedSentences(sentenceBuffer);
-        sentenceBuffer = remainder;
-        for (const sentence of complete) {
-          if (!(await enqueueSentence(sentence))) break roundLoop;
+    try {
+      for await (const streamChunk of brain.chatStream(history, availableTools, model)) {
+        if (streamChunk.contentDelta) {
+          content += streamChunk.contentDelta;
+          sentenceBuffer += streamChunk.contentDelta;
+          const { complete, remainder } = splitCompletedSentences(sentenceBuffer);
+          sentenceBuffer = remainder;
+          for (const sentence of complete) {
+            if (!(await enqueueSentence(sentence))) break roundLoop;
+          }
+        }
+        if (streamChunk.done && streamChunk.toolCalls) {
+          toolCalls = streamChunk.toolCalls;
         }
       }
-      if (streamChunk.done && streamChunk.toolCalls) {
-        toolCalls = streamChunk.toolCalls;
-      }
+    } catch (err) {
+      brainFailure = err instanceof Error ? err.message : String(err);
+      break roundLoop;
     }
 
     if (sentenceBuffer.trim() && !(await enqueueSentence(sentenceBuffer))) break;
@@ -453,7 +467,7 @@ export async function runTurn(opts: {
     await runToolCalls({ toolCalls, session, hms, faqRetriever, hospitalReferenceRetriever, history, toolCallsExecuted, slots, touchedSlots });
   }
 
-  if (!gotFinalAnswer && !ttsFailure && !isAborted?.()) {
+  if (!gotFinalAnswer && !brainFailure && !ttsFailure && !isAborted?.()) {
     // Hit MAX_TOOL_ROUNDS while the model still wanted more tool calls -- same reasoning
     // as the non-streaming path's identical fix: give it one final, tool-less round
     // grounded in whatever tool results are already in history (e.g. a just-completed
@@ -492,6 +506,6 @@ export async function runTurn(opts: {
     updatedHistory: history,
     updatedSlots: slots,
     formFieldsThisTurn: diffSlots(session.slots, touchedSlots),
-    error: ttsFailure,
+    error: brainFailure ?? ttsFailure,
   };
 }

@@ -175,6 +175,13 @@ export class TeraWebSDK {
       } catch (err) {
         this.emitError('AUDIO_CAPTURE_FAILED', err, /* recoverable */ false);
         this.setState('ERROR');
+        // Previously left the socket open with nothing left to ever act on it: HELLO
+        // was already sent, no audio will ever arrive, and neither this ERROR nor the
+        // STATE_CHANGE above triggers a reconnect -- only a real socket close does (see
+        // onclose below). Closing here routes through that same existing close-handling
+        // path instead of leaving the SDK permanently stuck until the host app manually
+        // tears everything down and starts over.
+        socket.close();
         return;
       }
       if (generation !== this.connectGeneration) {
@@ -240,6 +247,12 @@ export class TeraWebSDK {
     if (event.data instanceof ArrayBuffer) {
       const { type, payload } = decodeBinaryFrame(new Uint8Array(event.data));
       if (type === BinaryFrameType.AUDIO_OUTPUT_PCM16 && this.player) {
+        // An odd payload.byteLength (a truncated/corrupted frame) makes Int16Array's
+        // constructor throw a RangeError -- guarded the same way the JSON control-event
+        // path below already is (malformed frames are dropped, not allowed to throw on
+        // this hot path), rather than the two paths handling the same class of problem
+        // inconsistently.
+        if (payload.byteLength % 2 !== 0) return;
         const pcm16 = new Int16Array(payload.buffer, payload.byteOffset, payload.byteLength / 2);
         this.player.enqueue(pcm16);
         this.setState('SPEAKING');
@@ -368,6 +381,12 @@ export class TeraWebSDK {
   }
 }
 
+// Vita* is a rebrand alias -- this class/file is internally "Tera"-named throughout
+// (predates the Vita product name), but the one real consumer in this monorepo
+// (apps/web-demo) imports the Vita* alias, not the primary Tera* export below. Neither
+// name is deprecated; both resolve to the exact same class/types. If this package is
+// ever fully renamed internally, update this comment rather than silently dropping
+// whichever alias existing integrations depend on.
 export { TeraWebSDK as VitaWebSDK };
 export type { TeraConfig as VitaConfig, TeraState as VitaState };
 

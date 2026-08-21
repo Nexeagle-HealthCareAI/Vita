@@ -1,6 +1,7 @@
 {
   "name": "@vita/protocol",
   "version": "0.1.0",
+  "private": true,
   "description": "Shared, versioned WebSocket event contract for Tera clients and backend",
   "type": "module",
   "main": "./dist/index.js",

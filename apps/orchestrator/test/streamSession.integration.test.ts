@@ -4,6 +4,7 @@ import RedisMock from 'ioredis-mock';
 import WebSocket from 'ws';
 import { BinaryFrameType, decodeBinaryFrame, encodeBinaryFrame } from '@vita/protocol';
 import { buildServer } from '../src/index.js';
+import { StreamSessionHandler } from '../src/streamSession.js';
 import { mockGroq, mockGroqStream, mockStt, mockTts, mockHms } from './helpers.js';
 import type { SarvamRealtimeSttSession } from '../src/stt/sarvamRealtime.js';
 import type { ConnectionOpenGate } from '../src/connectionGate.js';
@@ -484,5 +485,46 @@ describe('orchestrator streaming STT route (GET /session/:id/stream)', () => {
 
     resolveConnect();
     await vi.waitFor(() => expect(sarvamRealtime.end).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe('StreamSessionHandler.sendJson -- closed-socket safety', () => {
+  it('never calls socket.send() (which THROWS, not no-ops, on a non-OPEN socket) once the socket has closed', async () => {
+    // ws's real WebSocket.send() throws when readyState isn't OPEN. sendJson() is called
+    // from several places with no surrounding try/catch, and a throw inside a synchronous
+    // 'message' event handler callback (see index.ts's socket.on('message', ...)) isn't
+    // caught by anything -- an uncaught exception that can crash the whole process. This
+    // constructs the handler directly (bypassing the real WS transport) so the fake
+    // socket's readyState can be deterministically non-OPEN right when init()'s failure
+    // path tries to report it, which is awkward to race reliably through a real socket.
+    const send = vi.fn(() => {
+      throw new Error('WebSocket is not open: readyState 3 (CLOSED)');
+    });
+    const fakeSocket = { readyState: 3, OPEN: 1, send } as unknown as WebSocket;
+
+    const handler = new StreamSessionHandler('sess-1', fakeSocket, {
+      sessions: {} as never, // init() never touches sessions -- only handleFinalTranscript does
+      brain: mockGroq([]),
+      tts: mockTts(),
+      hms: mockHms(),
+      rosterTextPromise: Promise.resolve(undefined),
+      streamingSttSessionFactory: () =>
+        ({
+          onPartialTranscript: vi.fn(),
+          onFinalTranscript: vi.fn(),
+          onFatal: vi.fn(),
+          connect: vi.fn().mockRejectedValue(new Error('quota_exceeded')),
+          sendAudio: vi.fn(),
+          sendSpeechStart: vi.fn(),
+          sendSpeechEnd: vi.fn(),
+          end: vi.fn(),
+        }) as unknown as SarvamRealtimeSttSession,
+      connectionGate: fakeGate(),
+      connectTimeoutMs: 100,
+      gateMaxWaitMs: 100,
+    });
+
+    await expect(handler.init()).resolves.not.toThrow();
+    expect(send).not.toHaveBeenCalled();
   });
 });

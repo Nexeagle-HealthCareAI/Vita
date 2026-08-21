@@ -356,6 +356,38 @@ describe('runTurn — round cap (a live call must never hang)', () => {
   });
 });
 
+describe('runTurn — streaming path: brain.chatStream() failure mid-round', () => {
+  it('still returns whatever was already spoken instead of rejecting the whole turn (so the caller can persist it)', async () => {
+    // Regression test: previously a chatStream() failure mid-round (network drop, our
+    // own AbortSignal.timeout firing) propagated straight out of runTurn, rejecting the
+    // whole call. streamSession.ts's catch block never persists history/slots on that
+    // path, so a sentence already spoken via onReplyChunk (already synthesized, already
+    // played to the caller) would silently vanish from the model's own memory on the
+    // next turn.
+    const brain = mockGroq([]); // .chat unused on the streaming path
+    brain.chatStream = vi.fn().mockImplementation(async function* () {
+      yield { contentDelta: 'Let me check that for you. ', done: false };
+      throw new Error('stream aborted');
+    });
+    const tts = mockTts(new Uint8Array([9, 9, 9]));
+    const hms = mockHms();
+    const chunks: { text: string; audio: Uint8Array; isFinal: boolean }[] = [];
+
+    const result = await runTurn({
+      session: baseSession(),
+      transcript: 'is dr patel around',
+      brain,
+      tts,
+      hms,
+      onReplyChunk: (chunk) => chunks.push(chunk),
+    });
+
+    expect(result.error).toBe('stream aborted');
+    expect(result.replyText).toContain('Let me check that for you.');
+    expect(chunks.length).toBeGreaterThan(0); // the caller already received (and can persist) what was spoken
+  });
+});
+
 describe('runTurn — slot-tracking across turns', () => {
   it('backfills a later book_appointment call from a doctorId/preferredDate set during an earlier check_doctor_availability turn', async () => {
     const brain1 = mockGroq([

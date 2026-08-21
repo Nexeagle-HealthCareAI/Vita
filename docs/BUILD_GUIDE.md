@@ -152,22 +152,26 @@ gateway's ticket endpoint and a mock orchestrator are both reachable — grant
 Playwright a fake media stream (`--use-fake-device-for-media-stream`) and
 assert on `onStateChange` transitions through a full round trip.
 
-### 3.3 `apps/gateway` — ticket auth done; wire the orchestrator relay
+### 3.3 `apps/gateway` — done, tested end to end
 
 `src/index.ts` has the HTTPS ticket exchange and WS upgrade fully working
-and tested (`apps/gateway/test/`). The one explicit `TODO` is the relay: on
-a successful ticket redemption, open an internal connection to
-`ORCHESTRATOR_INTERNAL_URL` tagged with `claims.sub`/`claims.role`, and pipe:
+and tested (`apps/gateway/test/`). `src/relay.ts` (`ConnectionRelay`) is the
+real, shipped orchestrator relay -- not a TODO -- on a successful ticket
+redemption it opens a session against the orchestrator (`createSession`/
+`resumeSession`) and pipes:
 
-- binary `AUDIO_INPUT_PCM16` frames from client → orchestrator
-- binary `AUDIO_OUTPUT_PCM16` frames from orchestrator → client
+- binary `AUDIO_INPUT_PCM16` frames from client → orchestrator, VAD-segmented
+  into utterances (pre-roll, silence-hangover, a `maxUtteranceMs` safety
+  valve) rather than relayed raw
+- binary `AUDIO_OUTPUT_PCM16` frames from orchestrator → client, chunked and
+  paced for jitter-buffer playback, with barge-in support
+  (`CLEAR_PLAYBACK`) that aborts the in-flight turn
 - JSON control events both ways
 
-Simplest Phase 1 implementation: a second `ws` client connection per
-session (gateway acts as a dumb relay; all real logic lives in the
-orchestrator). Add a `relay.ts` module and a test that spins up both a fake
-client `ws` and a fake orchestrator `ws` and asserts frames pass through
-byte-for-byte.
+It picks between two `TurnBackend` implementations per call (streaming vs.
+batch HTTP, see `turnBackend.ts`/`streamingTurnBackend.ts`), gated by
+`STREAMING_STT_ENABLED` with an automatic fallback to batch if the streaming
+backend is unavailable.
 
 **Load test** before go-live: `tools/load-test` (a custom `ws`-based Node
 harness, no external tool needed) spawns the real gateway, orchestrator, and

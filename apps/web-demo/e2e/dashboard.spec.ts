@@ -58,6 +58,8 @@ test('DPDPA consent modal: Accept & Start dismisses the modal and proceeds past 
   await expect(page.getByRole('dialog')).toHaveCount(0);
 });
 
-// Full mic-permission + WebSocket round trip is covered against a mocked
-// gateway in CI (grant fake-media-stream + mock WS server) — see
-// docs/BUILD_GUIDE.md §4.2 for the fixture setup this test extends.
+// A full mic-permission + WebSocket round trip against a mocked gateway (grant
+// fake-media-stream + mock WS server) is NOT covered here or anywhere else in CI yet --
+// this was previously claimed done in a stale comment. It remains real future work; see
+// docs/BUILD_GUIDE.md's testing notes for the fixture setup a real version of this test
+// would extend.

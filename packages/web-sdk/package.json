@@ -1,6 +1,7 @@
 {
   "name": "@vita/web-sdk",
   "version": "0.1.0",
+  "private": true,
   "description": "Browser client SDK for Tera voice assistant — audio capture, playback, WS session",
   "type": "module",
   "main": "./dist/index.js",

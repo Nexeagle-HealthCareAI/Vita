@@ -46,7 +46,7 @@ Changes from v1.0 are marked **[NEW]** / **[CHANGED]**.
               v
 +--------------------------------------------------------------------------------+
 |                  ORCHESTRATOR & DIALOGUE STATE MANAGER                         |
-|  - Redis session engine (Sentinel-fronted; session TTL + resume token) [CHANGED]|
+|  - Redis session engine (single node; session TTL + resume token) [CHANGED]    |
 |  - RBAC: role derived ONLY from verified JWT claims, never client input [CHANGED]|
 |  - Audit log sink: every patient-data access/tool-call is logged [NEW]         |
 |  - Web Screen Sync Emitter (UI_FORM_AUTOFILL push)                             |
@@ -81,7 +81,7 @@ Changes from v1.0 are marked **[NEW]** / **[CHANGED]**.
 | 5 | Single AEC (browser-native) for Phase 1 | Two AEC engines in series fight each other; revisit custom WASM AEC only if native quality proves insufficient in real clinic noise tests |
 | 6 | Client runs only a local RMS audio-level meter (not VAD); server VAD is the sole turn-taking authority | Removes ambiguity, keeps a single source of truth for turn-taking -- a client-side signal never participates in that decision at all |
 | 7 | `CLEAR_PLAYBACK` event + client-side jitter-buffer flush | Barge-in must stop audio in the browser, not just server-side buffers |
-| 8 | Redis session engine fronted by Sentinel, with session TTL + resume token | Single-node Redis failure currently drops every active call |
+| 8 | Redis session engine with session TTL + resume token -- **NOT yet Sentinel/HA-fronted** (a single plain `new IORedis(REDIS_URL)` connection today, see `apps/orchestrator/src/index.ts`; correctly described as future work in `session.ts`'s own comment and `docs/BUILD_GUIDE.md` §5) | Single-node Redis failure currently drops every active call -- this row was previously mislabeled as already shipped |
 | 9 | Audit log sink in the orchestrator | Required for any real patient-data access trail (DPDPA) |
 | 10 | Reconnect w/ backoff + `onError` in the SDK | Dropped WiFi at a reception desk shouldn't kill the whole interaction |
 

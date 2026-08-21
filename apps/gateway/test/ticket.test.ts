@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import jwt from 'jsonwebtoken';
-import { _clearTicketsForTests, redeemTicket, verifyJwtAndIssueTicket } from '../src/ticket.js';
+import { _clearTicketsForTests, _sweepExpiredTicketsForTests, _ticketCountForTests, redeemTicket, verifyJwtAndIssueTicket } from '../src/ticket.js';
 
 const SECRET = 'test-secret';
 
@@ -66,5 +66,39 @@ describe('ticket issuance & redemption', () => {
 
     const withConsent = verifyJwtAndIssueTicket(token, SECRET, undefined, true);
     expect(redeemTicket(withConsent)?.consentGiven).toBe(true);
+  });
+
+  it('rejects a JWT signed with a different algorithm than the pinned HS256', () => {
+    // A plain-string secret already makes jsonwebtoken infer an HMAC algorithm and
+    // reject `alg: none`, but the explicit allow-list is defense-in-depth that should
+    // stay correct even if this code is ever refactored -- confirm it's actually wired
+    // in, not just implied by the library's own default inference.
+    const noneAlgToken = `${Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url')}.${Buffer.from(JSON.stringify({ sub: 'user-1' })).toString('base64url')}.`;
+    expect(() => verifyJwtAndIssueTicket(noneAlgToken, SECRET)).toThrow();
+  });
+
+  describe('proactive expiry sweep (a ticket nothing ever tries to redeem)', () => {
+    afterEach(() => vi.useRealTimers());
+
+    it('sweepExpiredTickets removes an unredeemed-but-expired ticket, not just lazily on a redemption attempt', () => {
+      const token = jwt.sign({ sub: 'user-1' }, SECRET);
+      verifyJwtAndIssueTicket(token, SECRET); // never redeemed
+      expect(_ticketCountForTests()).toBe(1);
+
+      vi.useFakeTimers();
+      vi.setSystemTime(Date.now() + 60_000); // past TICKET_TTL_SECONDS's 30s default
+      _sweepExpiredTicketsForTests();
+
+      expect(_ticketCountForTests()).toBe(0);
+    });
+
+    it('leaves a not-yet-expired ticket alone', () => {
+      const token = jwt.sign({ sub: 'user-1' }, SECRET);
+      verifyJwtAndIssueTicket(token, SECRET);
+
+      _sweepExpiredTicketsForTests();
+
+      expect(_ticketCountForTests()).toBe(1);
+    });
   });
 });

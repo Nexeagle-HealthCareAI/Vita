@@ -49,6 +49,18 @@ describe('POST /session — DPDPA consent gate (docs/BUILD_GUIDE.md §6)', () =>
     auditSpy.mockRestore();
   });
 
+  it('missing consentGiven never resolves real permissions -- consent is checked first, before any backend call', async () => {
+    const { app: srv, hms } = app();
+
+    await srv.inject({
+      method: 'POST',
+      url: '/session',
+      payload: { sessionId: 'sess-2b', userId: 'user-1', hmsAccessToken: 'staff-token' },
+    });
+
+    expect(hms.getUserPermissions).not.toHaveBeenCalled();
+  });
+
   it('consentGiven: false is rejected the same as omitting it entirely', async () => {
     const res = await app().app.inject({
       method: 'POST',

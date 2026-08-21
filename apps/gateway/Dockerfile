@@ -32,5 +32,8 @@ FROM node:20-slim
 WORKDIR /prod/gateway
 ENV NODE_ENV=production
 COPY --from=build /prod/gateway /prod/gateway
+# node:20-slim ships a built-in non-root `node` user (uid 1000) for exactly this --
+# no privileged port here (8080), so nothing needs root.
+USER node
 EXPOSE 8080
 CMD ["node", "dist/index.js"]

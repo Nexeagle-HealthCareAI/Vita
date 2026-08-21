@@ -49,6 +49,20 @@ const tickets = new Map<string, TicketRecord>();
 
 const TICKET_TTL_MS = Number(process.env.TICKET_TTL_SECONDS ?? 30) * 1000;
 
+// Proactive expiry sweep -- redeemTicket() below only ever cleans up the ONE ticket
+// someone actually attempts to redeem. A client that fetches a ticket and never
+// completes the WS upgrade (crash, blocked WS, retry-without-cleanup, or a bot merely
+// probing this endpoint with any valid JWT) previously left that entry in memory
+// forever, since nothing else ever revisits it. .unref() so this alone never keeps the
+// process alive, same idiom as apps/orchestrator/src/audit.ts's retention-purge loop.
+function sweepExpiredTickets(): void {
+  const now = Date.now();
+  for (const [ticket, record] of tickets) {
+    if (now > record.expiresAt) tickets.delete(ticket);
+  }
+}
+setInterval(sweepExpiredTickets, Math.max(TICKET_TTL_MS, 5000)).unref();
+
 export function verifyJwtAndIssueTicket(
   bearerToken: string,
   secret: string,
@@ -61,7 +75,11 @@ export function verifyJwtAndIssueTicket(
   // query param (role/persona is no longer part of this contract at all -- it's now
   // derived server-side, orchestrator-side, from real resolved permissions -- see
   // apps/orchestrator/src/rbac.ts's Persona doc comment).
-  const decoded = jwt.verify(bearerToken, secret) as SessionClaims;
+  // algorithms pinned explicitly rather than relying on jsonwebtoken's own key-type
+  // inference (which does already correctly reject `alg: none` for a plain string
+  // secret) -- defense-in-depth that stays correct even if this code is ever refactored
+  // to accept an asymmetric key.
+  const decoded = jwt.verify(bearerToken, secret, { algorithms: ['HS256'] }) as SessionClaims;
   const ticket = randomUUID();
   tickets.set(ticket, {
     claims: { sub: decoded.sub, hospitalId: decoded.hospitalId, hmsAccessToken: decoded.hmsAccessToken },
@@ -87,4 +105,16 @@ export function redeemTicket(ticket: string): RedeemedTicket | null {
 
 export function _clearTicketsForTests(): void {
   tickets.clear();
+}
+
+export function _ticketCountForTests(): number {
+  return tickets.size;
+}
+
+/** Exposed so a test can exercise the sweep's logic directly against a controllable
+ * clock (vi.setSystemTime), rather than depending on the real, already-scheduled
+ * setInterval above -- that timer starts at module-import time, before any
+ * vi.useFakeTimers() a test installs afterward could ever intercept it. */
+export function _sweepExpiredTicketsForTests(): void {
+  sweepExpiredTickets();
 }

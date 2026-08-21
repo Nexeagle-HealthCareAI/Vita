@@ -444,7 +444,11 @@ export class ConnectionRelay {
       this.setState('LISTENING');
       return;
     }
-    this.deps.log?.debug({ transcript: text }, 'relay: final transcript received');
+    // Length only, never the transcript content itself -- this is PHI-adjacent (patient
+    // names, mobile numbers, symptoms), and Fastify's default log level (info) hides
+    // debug today, but the moment anyone bumps to debug for ordinary troubleshooting
+    // (a normal ops action) this would otherwise start writing that content to logs.
+    this.deps.log?.debug({ transcriptLength: text.length }, 'relay: final transcript received');
     this.sendJson({ event: 'TRANSCRIPT', text, is_final: true });
   }
 

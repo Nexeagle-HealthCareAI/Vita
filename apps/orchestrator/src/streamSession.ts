@@ -250,6 +250,14 @@ export class StreamSessionHandler {
   }
 
   private sendJson(msg: OrchestratorStreamMessage): void {
+    // WebSocket.send() THROWS (not just no-ops) when readyState isn't OPEN. This is
+    // called from several places with no surrounding try/catch (onFinalTranscript,
+    // handleFatal, handleMessage's synchronous dispatch), and an uncaught throw inside a
+    // synchronous 'message' event handler callback (see index.ts's
+    // socket.on('message', ...)) isn't caught by anything -- it becomes an unhandled
+    // exception that can crash the whole orchestrator process, same class of bug already
+    // fixed elsewhere in this file's init()/index.ts's WS route.
+    if (this.socket.readyState !== this.socket.OPEN) return;
     this.socket.send(JSON.stringify(msg));
   }
 }

@@ -173,28 +173,30 @@ export function buildServer(
       hospitalId?: string;
       hmsAccessToken?: string;
     };
-    // Resolved before the consent check so both audit lines below can carry a real
-    // persona -- this is pure data resolution (GET user/permissions), not itself an
-    // authorization decision, so doing it ahead of the consent gate is harmless (see
-    // permissions.ts's own fail-clean contract: never throws, resolves to [] on any
-    // failure, including a missing hmsAccessToken).
-    const { permissions } = await resolveSessionPermissions(hms, body.userId, body.hmsAccessToken);
-    const persona = derivePersona(permissions);
     // The one authoritative choke point for the DPDPA consent gate (docs/BUILD_GUIDE.md
     // §6) -- everything upstream (web-sdk, gateway ticket/relay) is a passthrough. A
     // resumed session never re-proves consent here since /session/:id/resume is a
     // separate route that only reattaches to a session that already passed this check.
+    // Checked FIRST, before ever resolving real permissions -- a real GET
+    // user/permissions call against easyHMSAPI, per permissions.ts. Consent is free (no
+    // I/O); a client (or bot) hammering this route without consent previously still
+    // drove one real backend call per request even though no session would ever be
+    // created either way.
     if (body.consentGiven !== true) {
       recordAuditEvent({
         ts: Date.now(),
         sessionId: body.sessionId,
         userId: body.userId,
-        role: persona,
+        // Permissions were never resolved -- consent was denied before that would
+        // matter for anything but this audit line's cosmetic persona field.
+        role: 'ROLE_RECEPTIONIST',
         action: 'consent_missing',
         outcome: 'denied',
       });
       return reply.code(400).send({ error: 'consent required before a session can start' });
     }
+    const { permissions } = await resolveSessionPermissions(hms, body.userId, body.hmsAccessToken);
+    const persona = derivePersona(permissions);
     recordAuditEvent({
       ts: Date.now(),
       sessionId: body.sessionId,

@@ -33,5 +33,8 @@ FROM node:20-slim
 WORKDIR /prod/orchestrator
 ENV NODE_ENV=production
 COPY --from=build /prod/orchestrator /prod/orchestrator
+# node:20-slim ships a built-in non-root `node` user (uid 1000) for exactly this --
+# no privileged port here (8081), so nothing needs root.
+USER node
 EXPOSE 8081
 CMD ["node", "dist/index.js"]
