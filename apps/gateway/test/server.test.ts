@@ -127,7 +127,7 @@ describe('gateway HTTP surface', () => {
       });
 
       const { ticket } = res.json() as { ticket: string };
-      expect(redeemTicket(ticket)?.resumeIntent).toEqual({ sessionId: 's1', resumeToken: 'tok-1' });
+      expect((await redeemTicket(ticket))?.resumeIntent).toEqual({ sessionId: 's1', resumeToken: 'tok-1' });
     });
 
     it('SESSION_RESUME_ENABLED=false drops the resume pair even when the client sends it', async () => {
@@ -142,7 +142,7 @@ describe('gateway HTTP surface', () => {
       });
 
       const { ticket } = res.json() as { ticket: string };
-      expect(redeemTicket(ticket)?.resumeIntent).toBeNull();
+      expect((await redeemTicket(ticket))?.resumeIntent).toBeNull();
     });
 
     it('a fresh session (no resume fields in the body) issues a ticket with a null resumeIntent', async () => {
@@ -155,7 +155,7 @@ describe('gateway HTTP surface', () => {
       });
 
       const { ticket } = res.json() as { ticket: string };
-      expect(redeemTicket(ticket)?.resumeIntent).toBeNull();
+      expect((await redeemTicket(ticket))?.resumeIntent).toBeNull();
     });
   });
 
@@ -172,7 +172,7 @@ describe('gateway HTTP surface', () => {
     });
 
     const { ticket } = res.json() as { ticket: string };
-    expect(redeemTicket(ticket)?.claims).toEqual({
+    expect((await redeemTicket(ticket))?.claims).toEqual({
       sub: 'user-1',
       hospitalId: 'h-1',
       hmsAccessToken: 'real-staff-jwt',

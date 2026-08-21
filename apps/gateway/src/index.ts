@@ -2,7 +2,14 @@ import Fastify from 'fastify';
 import websocketPlugin from '@fastify/websocket';
 import corsPlugin from '@fastify/cors';
 import { BinaryFrameType, decodeBinaryFrame } from '@vita/protocol';
-import { redeemTicket, verifyJwtAndIssueTicket, type RedeemedTicket, type ResumeIntent } from './ticket.js';
+import {
+  redeemTicket,
+  ticketStoreHealthy,
+  verifyJwtAndIssueTicket,
+  TicketStoreUnavailableError,
+  type RedeemedTicket,
+  type ResumeIntent,
+} from './ticket.js';
 import { AudioPreprocessClient } from './audioPreprocessClient.js';
 import { OrchestratorClient } from './orchestratorClient.js';
 import { ConnectionRelay, type RelayConfig } from './relay.js';
@@ -131,14 +138,21 @@ export function buildServer(deps?: {
         ? { sessionId: body.resumeSessionId, resumeToken: body.resumeToken }
         : undefined;
     try {
-      const ticket = verifyJwtAndIssueTicket(
+      const ticket = await verifyJwtAndIssueTicket(
         auth.slice('Bearer '.length),
         JWT_SECRET,
         resumeIntent,
         body.consentGiven === true,
       );
       return reply.send({ ticket });
-    } catch {
+    } catch (err) {
+      if (err instanceof TicketStoreUnavailableError) {
+        // 503, not 401 -- the caller's JWT was fine, our store is down. Telling a healthy
+        // client its credentials are bad would be actively misleading (and web-sdk treats
+        // any non-2xx the same anyway: throw, then reconnect with backoff).
+        req.log.error({ err }, 'ticket store unavailable');
+        return reply.code(503).send({ error: 'ticket store unavailable' });
+      }
       return reply.code(401).send({ error: 'invalid token' });
     }
   });
@@ -277,6 +291,12 @@ export function buildServer(deps?: {
     const orchestratorHealthy = await orchestrator.healthz();
     if (!orchestratorHealthy) {
       return reply.code(503).send({ status: 'degraded', orchestrator: 'unreachable' });
+    }
+    // An instance whose ticket store is unreachable fails 100% of ticket issuance AND
+    // every WS upgrade, so it must not report itself healthy to the LB / deploy gate.
+    // No-op (always true) for the default in-memory store.
+    if (!(await ticketStoreHealthy())) {
+      return reply.code(503).send({ status: 'degraded', ticketStore: 'unreachable' });
     }
     return { status: 'ok' };
   });
