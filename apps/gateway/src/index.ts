@@ -2,7 +2,7 @@ import Fastify from 'fastify';
 import websocketPlugin from '@fastify/websocket';
 import corsPlugin from '@fastify/cors';
 import { BinaryFrameType, decodeBinaryFrame } from '@vita/protocol';
-import { redeemTicket, verifyJwtAndIssueTicket, type ResumeIntent } from './ticket.js';
+import { redeemTicket, verifyJwtAndIssueTicket, type RedeemedTicket, type ResumeIntent } from './ticket.js';
 import { AudioPreprocessClient } from './audioPreprocessClient.js';
 import { OrchestratorClient } from './orchestratorClient.js';
 import { ConnectionRelay, type RelayConfig } from './relay.js';
@@ -50,6 +50,12 @@ function relayConfigFromEnv(): Partial<RelayConfig> {
   }
   return config;
 }
+
+/** How the WS route's preValidation hook hands the redeemed ticket to the socket handler.
+ * A property stashed on the request is the standard Fastify way to carry per-request state
+ * between lifecycle stages; the alternative (redeeming inside the handler) would force the
+ * handler async and open a frame-drop window -- see the route's own comment. */
+type RequestWithRedeemedTicket = { redeemedTicket: RedeemedTicket };
 
 export function extractTicketProtocol(protocols: string[]): string | undefined {
   const ticketProtocol = protocols.find((protocol) =>
@@ -142,98 +148,125 @@ export function buildServer(deps?: {
   // redeemed exactly once, and the resulting
   // claims (identity + role) are what everything downstream trusts —
   // NOT anything else the client sends on this connection.
+  //
+  // Redemption happens in preValidation, BEFORE the upgrade, rather than inside the
+  // socket handler. @fastify/websocket overrides routeOptions.handler, so the normal
+  // Fastify lifecycle (onRequest -> preValidation -> preHandler) runs before
+  // reply.hijack() -- which means an async redeem can happen here while the socket
+  // handler below stays fully SYNCHRONOUS. That matters: making the handler itself async
+  // would open a window between the upgrade completing and socket.on('message') being
+  // registered, and any frame arriving in that window is silently dropped by `ws`.
+  // Rejecting pre-upgrade is also better on its own terms -- the client never sees a
+  // successful open, so web-sdk's `reconnectAttempt = 0` (which lives in onopen) doesn't
+  // fire, and its exponential backoff works as intended instead of tight-looping.
   app.register(async (instance) => {
-    instance.get('/v1/stream', { websocket: true }, (socket, req) => {
-      const protocols = req.headers['sec-websocket-protocol']?.split(',').map((p) => p.trim()) ?? [];
-      const ticket = extractTicketProtocol(protocols);
-
-      const redeemed = ticket ? redeemTicket(ticket) : null;
-      if (!redeemed) {
-        socket.close(4001, 'invalid or expired ticket');
-        return;
-      }
-      const { claims, resumeIntent, consentGiven } = redeemed;
-
-      req.log.info({ sub: claims.sub, resuming: !!resumeIntent }, 'session established');
-
-      if (resumeIntent) {
-        // Force-close any relay this process still has live for the target sessionId
-        // BEFORE the new relay starts -- two relays must never concurrently drive one
-        // orchestrator session on this process. Same-process-only scope, see
-        // RelaySessionRegistry's doc comment.
-        relaySessionRegistry.evict(resumeIntent.sessionId);
-      }
-
-      let socketClosed = false;
-
-      // apps/gateway/src/relay.ts owns VAD-based utterance segmentation and the
-      // LISTENING/PROCESSING/SPEAKING lifecycle for this connection; it calls out to
-      // audio-preprocess per frame regardless, and to the orchestrator via whichever
-      // TurnBackend backendFactory hands it -- real-time streaming over a persistent WS
-      // when STREAMING_STT_ENABLED, else the batch HTTP path, decided once per call.
-      const relay = new ConnectionRelay(
-        {
-          audioPreprocess,
-          orchestrator,
-          backendFactory,
-          claims,
-          consentGiven,
-          send: (data) => socket.send(data),
-          close: (code, reason) => socket.close(code ?? 4009, reason ?? 'session resumed on a new connection'),
-          log: req.log,
-        },
-        relayConfig,
-      );
-
-      void relay.start(resumeIntent ?? undefined).then((ok) => {
-        if (!ok) {
-          req.log.warn({ sub: claims.sub }, 'orchestrator session bootstrap failed');
-          socket.close(4002, 'orchestrator unavailable');
-          return;
-        }
-        if (socketClosed) {
-          // The connection already dropped while start() was still in flight -- tear
-          // down promptly rather than registering an entry for a dead socket (also
-          // closes a pre-existing leak: previously nothing ever cleaned this up).
-          relay.close();
-          return;
-        }
-        if (relay.sessionId) relaySessionRegistry.register(relay.sessionId, relay);
-      }).catch((err) => {
-        // Defense-in-depth: createSession()/resumeSession() are now airtight (never
-        // throw, see orchestratorClient.ts), but this `void ...then(...)` chain had no
-        // .catch() anywhere -- any future throw inside start() (or this .then() callback
-        // itself) would otherwise be an unhandled promise rejection, which can crash the
-        // whole gateway process and drop every other concurrent call on this instance.
-        req.log.error({ err, sub: claims.sub }, 'relay bootstrap failed unexpectedly');
-        socket.close(1011, 'internal error');
-      });
-
-      socket.on('message', (data: Buffer, isBinary: boolean) => {
-        if (isBinary) {
-          // web-sdk prefixes every mic frame with the protocol's 1-byte AUDIO_INPUT_PCM16
-          // type marker (encodeBinaryFrame) -- strip it before treating the rest as raw
-          // PCM16, otherwise every buffered frame carries a spurious leading byte that
-          // shifts 16-bit sample alignment for everything after it.
-          const { type, payload } = decodeBinaryFrame(new Uint8Array(data));
-          if (type === BinaryFrameType.AUDIO_INPUT_PCM16) {
-            relay.handleAudioFrame(payload);
-          } else {
-            req.log.debug({ type }, 'ignoring unexpected binary frame type');
+    instance.get(
+      '/v1/stream',
+      {
+        websocket: true,
+        preValidation: async (req, reply) => {
+          const protocols = req.headers['sec-websocket-protocol']?.split(',').map((p) => p.trim()) ?? [];
+          const ticket = extractTicketProtocol(protocols);
+          const redeemed = ticket ? await redeemTicket(ticket) : null;
+          if (!redeemed) {
+            // 401 instead of the old in-socket close(4001): the upgrade never happens, so
+            // there's no socket to close. Verified no test, doc, or SDK branch keys on
+            // 4001 -- web-sdk's onclose routes the resulting 1006 into the same default
+            // reconnect branch.
+            return reply.code(401).send({ error: 'invalid or expired ticket' });
           }
-        } else {
-          relay.handleControlEvent(data.toString());
-        }
-      });
+          (req as unknown as RequestWithRedeemedTicket).redeemedTicket = redeemed;
+        },
+      },
+      (socket, req) => {
+        // Non-null asserted: preValidation above either set this or already replied 401,
+        // so the handler is unreachable without it.
+        const { claims, resumeIntent, consentGiven } = (req as unknown as RequestWithRedeemedTicket).redeemedTicket;
 
-      socket.on('close', () => {
-        socketClosed = true;
-        const sessionId = relay.sessionId; // capture BEFORE close() nulls it internally
-        relay.close();
-        if (sessionId) relaySessionRegistry.unregister(sessionId, relay);
-        req.log.info({ sub: claims.sub }, 'session closed');
-      });
-    });
+        req.log.info({ sub: claims.sub, resuming: !!resumeIntent }, 'session established');
+
+        if (resumeIntent) {
+          // Force-close any relay this process still has live for the target sessionId
+          // BEFORE the new relay starts -- two relays must never concurrently drive one
+          // orchestrator session on this process. Same-process-only scope, see
+          // RelaySessionRegistry's doc comment.
+          relaySessionRegistry.evict(resumeIntent.sessionId);
+        }
+
+        let socketClosed = false;
+
+        // apps/gateway/src/relay.ts owns VAD-based utterance segmentation and the
+        // LISTENING/PROCESSING/SPEAKING lifecycle for this connection; it calls out to
+        // audio-preprocess per frame regardless, and to the orchestrator via whichever
+        // TurnBackend backendFactory hands it -- real-time streaming over a persistent WS
+        // when STREAMING_STT_ENABLED, else the batch HTTP path, decided once per call.
+        const relay = new ConnectionRelay(
+          {
+            audioPreprocess,
+            orchestrator,
+            backendFactory,
+            claims,
+            consentGiven,
+            send: (data) => socket.send(data),
+            close: (code, reason) => socket.close(code ?? 4009, reason ?? 'session resumed on a new connection'),
+            log: req.log,
+          },
+          relayConfig,
+        );
+
+        void relay
+          .start(resumeIntent ?? undefined)
+          .then((ok) => {
+            if (!ok) {
+              req.log.warn({ sub: claims.sub }, 'orchestrator session bootstrap failed');
+              socket.close(4002, 'orchestrator unavailable');
+              return;
+            }
+            if (socketClosed) {
+              // The connection already dropped while start() was still in flight -- tear
+              // down promptly rather than registering an entry for a dead socket (also
+              // closes a pre-existing leak: previously nothing ever cleaned this up).
+              relay.close();
+              return;
+            }
+            if (relay.sessionId) relaySessionRegistry.register(relay.sessionId, relay);
+          })
+          .catch((err) => {
+            // Defense-in-depth: createSession()/resumeSession() are now airtight (never
+            // throw, see orchestratorClient.ts), but this `void ...then(...)` chain had no
+            // .catch() anywhere -- any future throw inside start() (or this .then() callback
+            // itself) would otherwise be an unhandled promise rejection, which can crash the
+            // whole gateway process and drop every other concurrent call on this instance.
+            req.log.error({ err, sub: claims.sub }, 'relay bootstrap failed unexpectedly');
+            socket.close(1011, 'internal error');
+          });
+
+        socket.on('message', (data: Buffer, isBinary: boolean) => {
+          if (isBinary) {
+            // web-sdk prefixes every mic frame with the protocol's 1-byte AUDIO_INPUT_PCM16
+            // type marker (encodeBinaryFrame) -- strip it before treating the rest as raw
+            // PCM16, otherwise every buffered frame carries a spurious leading byte that
+            // shifts 16-bit sample alignment for everything after it.
+            const { type, payload } = decodeBinaryFrame(new Uint8Array(data));
+            if (type === BinaryFrameType.AUDIO_INPUT_PCM16) {
+              relay.handleAudioFrame(payload);
+            } else {
+              req.log.debug({ type }, 'ignoring unexpected binary frame type');
+            }
+          } else {
+            relay.handleControlEvent(data.toString());
+          }
+        });
+
+        socket.on('close', () => {
+          socketClosed = true;
+          const sessionId = relay.sessionId; // capture BEFORE close() nulls it internally
+          relay.close();
+          if (sessionId) relaySessionRegistry.unregister(sessionId, relay);
+          req.log.info({ sub: claims.sub }, 'session closed');
+        });
+      },
+    );
   });
 
   // Checks the orchestrator's own reachability/health transitively -- previously an

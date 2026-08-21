@@ -178,4 +178,37 @@ describe('gateway HTTP surface', () => {
       hmsAccessToken: 'real-staff-jwt',
     });
   });
+
+  describe('GET /v1/stream ticket rejection happens BEFORE the WS upgrade', () => {
+    // Redemption moved into a preValidation hook so the socket handler can stay
+    // synchronous (an async handler would drop frames arriving before
+    // socket.on('message') is registered). The observable consequence is that a bad
+    // ticket is now a plain HTTP 401 -- the upgrade never happens -- rather than an
+    // accepted upgrade followed by close(4001).
+    it('an absent ticket subprotocol is rejected with 401, not an upgrade', async () => {
+      const app = buildServer();
+      const res = await app.inject({
+        method: 'GET',
+        url: '/v1/stream',
+        headers: { connection: 'upgrade', upgrade: 'websocket' },
+      });
+
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('an unknown/expired ticket is rejected with 401, not an upgrade', async () => {
+      const app = buildServer();
+      const res = await app.inject({
+        method: 'GET',
+        url: '/v1/stream',
+        headers: {
+          connection: 'upgrade',
+          upgrade: 'websocket',
+          'sec-websocket-protocol': 'vita-ticket.never-issued',
+        },
+      });
+
+      expect(res.statusCode).toBe(401);
+    });
+  });
 });
