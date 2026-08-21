@@ -24,7 +24,7 @@ function fakeAudioPreprocess() {
 
 function fakeOrchestrator() {
   const client = Object.create(OrchestratorClient.prototype) as OrchestratorClient;
-  client.createSession = vi.fn().mockResolvedValue({ sessionId: 'sess-1', resumeToken: 'resume-tok-1' });
+  client.createSession = vi.fn().mockResolvedValue({ sessionId: 'sess-1', resumeToken: 'resume-tok-1', epoch: 1 });
   client.resumeSession = vi.fn().mockResolvedValue(null);
   client.postAudioTurn = vi.fn().mockResolvedValue({
     ok: true,

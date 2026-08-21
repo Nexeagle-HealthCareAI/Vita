@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocketServer, type WebSocket as WsWebSocket } from 'ws';
 import { BinaryFrameType, decodeBinaryFrame, encodeBinaryFrame } from '@vita/protocol';
 import { OrchestratorStreamClient, type OrchestratorStreamCallbacks } from '../src/orchestratorStreamClient.js';
+import type { SessionHandle } from '../src/turnBackend.js';
+
+const HANDLE: SessionHandle = { sessionId: 'sess-1', epoch: 4 };
 
 function fakeCallbacks(): OrchestratorStreamCallbacks {
   return {
@@ -44,8 +47,21 @@ describe('OrchestratorStreamClient', () => {
     });
     client = new OrchestratorStreamClient(baseWsUrl);
 
-    const outcome = await client.connect('sess-1', 1000, fakeCallbacks());
+    const outcome = await client.connect(HANDLE, 1000, fakeCallbacks());
     expect(outcome).toBe('ready');
+  });
+
+  it('declares the session epoch in the upgrade URL -- a WS upgrade has no body to put it in', async () => {
+    const urls: string[] = [];
+    wss.once('connection', (socket, req) => {
+      urls.push(req.url ?? '');
+      socket.send(JSON.stringify({ event: 'stream.ready' }));
+    });
+    client = new OrchestratorStreamClient(baseWsUrl);
+
+    await client.connect(HANDLE, 1000, fakeCallbacks());
+
+    expect(urls[0]).toBe('/session/sess-1/stream?epoch=4');
   });
 
   it('resolves "unavailable" when the server sends stream.unavailable', async () => {
@@ -54,7 +70,7 @@ describe('OrchestratorStreamClient', () => {
     });
     client = new OrchestratorStreamClient(baseWsUrl);
 
-    const outcome = await client.connect('sess-1', 1000, fakeCallbacks());
+    const outcome = await client.connect(HANDLE, 1000, fakeCallbacks());
     expect(outcome).toBe('unavailable');
   });
 
@@ -64,7 +80,7 @@ describe('OrchestratorStreamClient', () => {
     });
     client = new OrchestratorStreamClient(baseWsUrl);
 
-    const outcome = await client.connect('sess-1', 1000, fakeCallbacks());
+    const outcome = await client.connect(HANDLE, 1000, fakeCallbacks());
     expect(outcome).toBe('unavailable');
   });
 
@@ -74,13 +90,13 @@ describe('OrchestratorStreamClient', () => {
     });
     client = new OrchestratorStreamClient(baseWsUrl);
 
-    const outcome = await client.connect('sess-1', 50, fakeCallbacks());
+    const outcome = await client.connect(HANDLE, 50, fakeCallbacks());
     expect(outcome).toBe('unavailable');
   });
 
   it('never rejects even against an unreachable host (connection error settles to "unavailable")', async () => {
     client = new OrchestratorStreamClient('ws://127.0.0.1:1'); // reserved, always refused
-    const outcome = await client.connect('sess-1', 1000, fakeCallbacks());
+    const outcome = await client.connect(HANDLE, 1000, fakeCallbacks());
     expect(outcome).toBe('unavailable');
   });
 
@@ -92,7 +108,7 @@ describe('OrchestratorStreamClient', () => {
     });
     client = new OrchestratorStreamClient(baseWsUrl);
     const callbacks = fakeCallbacks();
-    await client.connect('sess-1', 1000, callbacks);
+    await client.connect(HANDLE, 1000, callbacks);
 
     serverSocket!.send(JSON.stringify({ event: 'transcript.partial', text: 'hel' }));
     serverSocket!.send(JSON.stringify({ event: 'transcript.final', text: 'hello' }));
@@ -120,7 +136,7 @@ describe('OrchestratorStreamClient', () => {
     });
     client = new OrchestratorStreamClient(baseWsUrl);
     const callbacks = fakeCallbacks();
-    await client.connect('sess-1', 1000, callbacks);
+    await client.connect(HANDLE, 1000, callbacks);
 
     // Chunk 1: non-final text immediately followed by its own audio frame.
     serverSocket!.send(JSON.stringify({ event: 'turn.reply', text: 'Sure, ', final: false }));
@@ -143,7 +159,7 @@ describe('OrchestratorStreamClient', () => {
     });
     client = new OrchestratorStreamClient(baseWsUrl);
     const callbacks = fakeCallbacks();
-    await client.connect('sess-1', 1000, callbacks);
+    await client.connect(HANDLE, 1000, callbacks);
 
     serverSocket!.close(1011, 'internal error');
 
@@ -159,7 +175,7 @@ describe('OrchestratorStreamClient', () => {
       });
     });
     client = new OrchestratorStreamClient(baseWsUrl);
-    await client.connect('sess-1', 1000, fakeCallbacks());
+    await client.connect(HANDLE, 1000, fakeCallbacks());
 
     client.sendSpeechStart();
     client.sendSpeechEnd();

@@ -191,7 +191,7 @@ export class ConnectionRelay {
   }
 
   async start(resumeInfo?: ResumeIntent): Promise<boolean> {
-    let established: { sessionId: string; resumeToken: string; resumed: boolean } | null = null;
+    let established: { sessionId: string; resumeToken: string; epoch: number; resumed: boolean } | null = null;
 
     if (resumeInfo) {
       // userId is always the JWT-verified claims.sub, never anything from the
@@ -224,7 +224,7 @@ export class ConnectionRelay {
     // create() never throws -- it always resolves to *some* backend (streaming, or a
     // batch fallback if streaming is disabled/unavailable), so this can't fail this
     // call the way the createSession()/resumeSession() checks above can.
-    this.backend = await this.deps.backendFactory.create(this._sessionId, {
+    this.backend = await this.deps.backendFactory.create({ sessionId: this._sessionId, epoch: established.epoch }, {
       onPartialTranscript: (text) => this.onPartialTranscript(text),
       onFinalTranscript: (text) => this.onFinalTranscript(text),
       onReplyText: (text) => this.onReplyText(text),

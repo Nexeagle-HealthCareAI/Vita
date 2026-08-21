@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 // @ts-expect-error -- ioredis-mock has no bundled types
 import RedisMock from 'ioredis-mock';
 import { buildServer } from '../src/index.js';
@@ -126,6 +126,61 @@ describe('write-time epoch fence (a superseded connection must not clobber a new
 
     expect(res.statusCode).toBe(200);
     expect(JSON.stringify((await store.get('sess-1'))?.history)).toContain('post-resume reply');
+  });
+});
+
+describe('entry-side epoch fence (SESSION_EPOCH_ENFORCEMENT_ENABLED, ships dark)', () => {
+  afterEach(() => {
+    delete process.env.SESSION_EPOCH_ENFORCEMENT_ENABLED;
+  });
+
+  async function appWithSession() {
+    const brain = mockGroq([{ content: 'ok', toolCalls: [] }, { content: 'ok', toolCalls: [] }]);
+    const redis = new RedisMock();
+    const app = buildServer(redis, { brain, stt: mockStt('hello'), tts: mockTts(), hms: mockHms() });
+    await createSession(app, 'sess-1');
+    return { app, brain };
+  }
+
+  function audioTurn(app: ReturnType<typeof buildServer>, headers: Record<string, string> = {}) {
+    return app.inject({
+      method: 'POST',
+      url: '/session/sess-1/turn/audio',
+      headers: { 'content-type': 'application/octet-stream', ...headers },
+      payload: Buffer.from([1, 2, 3, 4]),
+    });
+  }
+
+  it('rejects a stale declared epoch BEFORE spending a Groq round trip, when enforcement is on', async () => {
+    process.env.SESSION_EPOCH_ENFORCEMENT_ENABLED = 'true';
+    const { app, brain } = await appWithSession();
+
+    const res = await audioTurn(app, { 'x-vita-session-epoch': '99' }); // session is at epoch 1
+
+    expect(res.statusCode).toBe(502);
+    expect(JSON.parse(res.body).error.code).toBe('SESSION_SUPERSEDED');
+    expect(JSON.parse(res.body).error.recoverable).toBe(false);
+    expect(brain.chat).not.toHaveBeenCalled(); // the whole point: refuse before paying for the turn
+  });
+
+  it('accepts a matching declared epoch', async () => {
+    process.env.SESSION_EPOCH_ENFORCEMENT_ENABLED = 'true';
+    const { app } = await appWithSession();
+
+    expect((await audioTurn(app, { 'x-vita-session-epoch': '1' })).statusCode).toBe(200);
+  });
+
+  it('accepts a request that declares NO epoch even with enforcement on -- required for rolling deploys and older gateway builds', async () => {
+    process.env.SESSION_EPOCH_ENFORCEMENT_ENABLED = 'true';
+    const { app } = await appWithSession();
+
+    expect((await audioTurn(app)).statusCode).toBe(200);
+  });
+
+  it('ships dark: a stale epoch is accepted at entry when enforcement is off (the default)', async () => {
+    const { app } = await appWithSession(); // env var unset
+
+    expect((await audioTurn(app, { 'x-vita-session-epoch': '99' })).statusCode).toBe(200);
   });
 });
 

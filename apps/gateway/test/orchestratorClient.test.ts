@@ -23,7 +23,18 @@ describe('OrchestratorClient', () => {
         consentGiven: true,
       });
 
-      expect(result).toEqual({ sessionId: 'sess-1', resumeToken: 'tok-1' });
+      // epoch defaults to 0 when the response omits it -- an orchestrator build predating
+      // the field must not break this client.
+      expect(result).toEqual({ sessionId: 'sess-1', resumeToken: 'tok-1', epoch: 0 });
+    });
+
+    it('carries the epoch through when the orchestrator sends one', async () => {
+      const fetchImpl = fakeFetch({ ok: true, body: { sessionId: 'sess-1', resumeToken: 'tok-1', epoch: 3 } });
+      const client = new OrchestratorClient('http://orchestrator', fetchImpl);
+
+      const result = await client.createSession({ sessionId: 'sess-1', userId: 'user-1', consentGiven: true });
+
+      expect(result?.epoch).toBe(3);
     });
 
     it('a non-ok response resolves null', async () => {
@@ -66,7 +77,7 @@ describe('OrchestratorClient', () => {
 
       const result = await client.resumeSession('sess-1', 'old-tok', 'user-1');
 
-      expect(result).toEqual({ sessionId: 'sess-1', resumeToken: 'new-tok' });
+      expect(result).toEqual({ sessionId: 'sess-1', resumeToken: 'new-tok', epoch: 0 });
       expect(fetchImpl).toHaveBeenCalledWith(
         'http://orchestrator/session/sess-1/resume',
         expect.objectContaining({
@@ -91,6 +102,18 @@ describe('OrchestratorClient', () => {
       const client = new OrchestratorClient('http://orchestrator', fetchImpl);
 
       await expect(client.resumeSession('sess-1', 'tok', 'user-1')).resolves.toBeNull();
+    });
+  });
+
+  describe('postAudioTurn', () => {
+    it('declares the session epoch as a header -- the body is raw PCM, so it can\'t ride there', async () => {
+      const fetchImpl = fakeFetch({ ok: true, body: { transcript: '', replyText: null, audioBase64: null, toolCallsExecuted: [] } });
+      const client = new OrchestratorClient('http://orchestrator', fetchImpl);
+
+      await client.postAudioTurn('sess-1', 7, new Uint8Array([1, 2, 3]));
+
+      const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect((init as RequestInit).headers).toMatchObject({ 'x-vita-session-epoch': '7' });
     });
   });
 });

@@ -65,10 +65,19 @@ export interface TurnBackend {
   close(): void;
 }
 
+/** Identifies WHICH orchestrator session, and which generation of it, a backend speaks
+ * for. Passed as one object rather than two positional params so the two values can't be
+ * transposed at a call site, and so future per-connection identity has one place to live.
+ * See OrchestratorSessionResult.epoch. */
+export interface SessionHandle {
+  sessionId: string;
+  epoch: number;
+}
+
 export interface TurnBackendFactory {
   /** All connection setup, and the streaming-vs-batch fallback decision, happens here,
    * once, at call start. Never throws -- always resolves to *some* backend. */
-  create(sessionId: string, events: TurnBackendEvents): Promise<TurnBackend>;
+  create(handle: SessionHandle, events: TurnBackendEvents): Promise<TurnBackend>;
 }
 
 /** Today's exact existing behavior (previously ConnectionRelay.endOfUtterance()'s HTTP-call
@@ -77,7 +86,7 @@ export interface TurnBackendFactory {
 export class BatchTurnBackend implements TurnBackend {
   constructor(
     private readonly orchestrator: OrchestratorClient,
-    private readonly sessionId: string,
+    private readonly handle: SessionHandle,
     private readonly events: TurnBackendEvents,
   ) {}
 
@@ -91,7 +100,7 @@ export class BatchTurnBackend implements TurnBackend {
   }
 
   endUtterance(fullAudio: Uint8Array): void {
-    void this.orchestrator.postAudioTurn(this.sessionId, fullAudio).then(
+    void this.orchestrator.postAudioTurn(this.handle.sessionId, this.handle.epoch, fullAudio).then(
       (result) => {
         if (!result.ok) {
           this.events.onError(result.error);

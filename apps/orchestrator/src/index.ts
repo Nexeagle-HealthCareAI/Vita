@@ -30,6 +30,36 @@ import { fetchRosterText } from './doctorRoster.js';
 const PORT = Number(process.env.ORCHESTRATOR_PORT ?? 8081);
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 
+/** Header/query param a gateway uses to declare which session generation its connection
+ * belongs to -- see session.ts's DialogueSession.epoch. */
+export const SESSION_EPOCH_HEADER = 'x-vita-session-epoch';
+
+/**
+ * Whether to reject a turn whose declared epoch is stale at ROUTE ENTRY (cheap -- before
+ * any Groq/TTS spend), on top of session.ts's write-time fence, which is the real
+ * correctness backstop and is always on.
+ *
+ * Ships dark (`=== 'true'`, default OFF), matching the gateway's
+ * PROTOCOL_VERSION_ENFORCEMENT_ENABLED rather than SESSION_RESUME_ENABLED's `!== 'false'`:
+ * a misfire here kills live calls, so it gets the conservative default. Read fresh at the
+ * point of use so tests can toggle it per-case.
+ *
+ * Note this is only ever consulted when the caller actually SENT an epoch. A request with
+ * no epoch is always accepted regardless -- required for rolling deploys and for any
+ * gateway build predating this contract.
+ */
+function epochEnforcementEnabled(): boolean {
+  return process.env.SESSION_EPOCH_ENFORCEMENT_ENABLED === 'true';
+}
+
+/** Parses a declared epoch off a request. Returns null for absent/garbage -- both mean
+ * "caller didn't declare one", which is never a rejection. */
+function declaredEpoch(raw: string | string[] | undefined): number | null {
+  if (typeof raw !== 'string' || raw.trim() === '') return null;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
 export function buildServer(
   redisClient?: Redis,
   clients?: {
@@ -399,6 +429,25 @@ export function buildServer(
       return reply.code(404).send({ error: { code: 'SESSION_NOT_FOUND', message: 'session not found', recoverable: false } });
     }
 
+    // Cheap entry-side fence: reject a connection that's already been superseded BEFORE
+    // spending a Groq/Sarvam round trip on it. Absent epoch => always accepted (rolling
+    // deploys, older gateway builds). session.ts's write-time fence is the real backstop
+    // and stays on regardless -- this only saves work.
+    const claimedEpoch = declaredEpoch(req.headers[SESSION_EPOCH_HEADER]);
+    if (epochEnforcementEnabled() && claimedEpoch !== null && claimedEpoch !== (session.epoch ?? 0)) {
+      recordAuditEvent({
+        ts: Date.now(),
+        sessionId: id,
+        userId: session.userId,
+        role: session.persona,
+        action: 'turn_superseded',
+        outcome: 'denied',
+      });
+      return reply
+        .code(502)
+        .send({ error: { code: 'SESSION_SUPERSEDED', message: 'this session was resumed on a newer connection', recoverable: false } });
+    }
+
     const audio = new Uint8Array(req.body as Buffer);
 
     let transcript: string;
@@ -501,6 +550,24 @@ export function buildServer(
           const session = await sessions.get(id);
           if (!session) {
             socket.close(4004, 'session not found');
+            return;
+          }
+
+          // Entry-side fence, the stream twin of /turn/audio's header check. A WS upgrade
+          // has no body, so the epoch rides the query string -- which is exactly why the
+          // fence value is a bare integer and not resumeToken: Fastify's logger writes
+          // every request URL to stdout.
+          const claimedEpoch = declaredEpoch((req.query as Record<string, string> | undefined)?.epoch);
+          if (epochEnforcementEnabled() && claimedEpoch !== null && claimedEpoch !== (session.epoch ?? 0)) {
+            recordAuditEvent({
+              ts: Date.now(),
+              sessionId: id,
+              userId: session.userId,
+              role: session.persona,
+              action: 'turn_superseded',
+              outcome: 'denied',
+            });
+            socket.close(4004, 'session superseded');
             return;
           }
 

@@ -18,7 +18,7 @@ function fakeAudioPreprocess() {
 
 function fakeOrchestrator() {
   const client = Object.create(OrchestratorClient.prototype) as OrchestratorClient;
-  client.createSession = vi.fn().mockResolvedValue({ sessionId: 'sess-1', resumeToken: 'tok-1' });
+  client.createSession = vi.fn().mockResolvedValue({ sessionId: 'sess-1', resumeToken: 'tok-1', epoch: 1 });
   client.resumeSession = vi.fn().mockResolvedValue(null);
   return client;
 }
@@ -82,7 +82,7 @@ describe('gateway WS resume -- reconnecting into the same orchestrator session',
   it('a valid resume reattaches to the same orchestrator session -- createSession only called once total', async () => {
     audioPreprocess = fakeAudioPreprocess();
     const orchestrator = fakeOrchestrator();
-    orchestrator.resumeSession = vi.fn().mockResolvedValue({ sessionId: 'sess-1', resumeToken: 'tok-2' });
+    orchestrator.resumeSession = vi.fn().mockResolvedValue({ sessionId: 'sess-1', resumeToken: 'tok-2', epoch: 2 });
     app = buildServer({ audioPreprocess, orchestrator });
     const port = await serverPort();
 
@@ -125,7 +125,7 @@ describe('gateway WS resume -- reconnecting into the same orchestrator session',
   it('a resume evicts a still-open connection for the same session on this process, without the client closing it first', async () => {
     audioPreprocess = fakeAudioPreprocess();
     const orchestrator = fakeOrchestrator();
-    orchestrator.resumeSession = vi.fn().mockResolvedValue({ sessionId: 'sess-1', resumeToken: 'tok-2' });
+    orchestrator.resumeSession = vi.fn().mockResolvedValue({ sessionId: 'sess-1', resumeToken: 'tok-2', epoch: 2 });
     app = buildServer({ audioPreprocess, orchestrator });
     const port = await serverPort();
 

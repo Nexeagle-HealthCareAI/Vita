@@ -1,5 +1,6 @@
 import WebSocket from 'ws';
 import { BinaryFrameType, decodeBinaryFrame, encodeBinaryFrame } from '@vita/protocol';
+import type { SessionHandle } from './turnBackend.js';
 
 /**
  * Internal gateway<->orchestrator control vocabulary for the real-time streaming path.
@@ -52,7 +53,7 @@ export class OrchestratorStreamClient {
     private readonly wsImpl: typeof WebSocket = WebSocket,
   ) {}
 
-  connect(sessionId: string, timeoutMs: number, callbacks: OrchestratorStreamCallbacks): Promise<StreamConnectOutcome> {
+  connect(handle: SessionHandle, timeoutMs: number, callbacks: OrchestratorStreamCallbacks): Promise<StreamConnectOutcome> {
     this.callbacks = callbacks;
     return new Promise((resolve) => {
       let settled = false;
@@ -65,7 +66,12 @@ export class OrchestratorStreamClient {
 
       const timer = setTimeout(() => settle('unavailable'), timeoutMs);
 
-      const socket = new this.wsImpl(`${this.baseWsUrl}/session/${encodeURIComponent(sessionId)}/stream`);
+      // epoch rides the query string -- a WS upgrade has no body. It's a bare integer
+      // precisely so this URL (which Fastify logs on every request, orchestrator-side) is
+      // safe to have in logs; see the orchestrator's DialogueSession.epoch.
+      const socket = new this.wsImpl(
+        `${this.baseWsUrl}/session/${encodeURIComponent(handle.sessionId)}/stream?epoch=${encodeURIComponent(String(handle.epoch))}`,
+      );
       this.socket = socket;
       socket.binaryType = 'nodebuffer';
 

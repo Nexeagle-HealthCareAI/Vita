@@ -1,4 +1,4 @@
-import { BatchTurnBackend, type TurnBackend, type TurnBackendEvents, type TurnBackendFactory } from './turnBackend.js';
+import { BatchTurnBackend, type SessionHandle, type TurnBackend, type TurnBackendEvents, type TurnBackendFactory } from './turnBackend.js';
 import { OrchestratorStreamClient } from './orchestratorStreamClient.js';
 import type { OrchestratorClient } from './orchestratorClient.js';
 
@@ -122,14 +122,14 @@ export class DefaultTurnBackendFactory implements TurnBackendFactory {
     private readonly config: TurnBackendFactoryConfig,
   ) {}
 
-  async create(sessionId: string, events: TurnBackendEvents): Promise<TurnBackend> {
+  async create(handle: SessionHandle, events: TurnBackendEvents): Promise<TurnBackend> {
     if (!this.config.streamingEnabled) {
-      return new BatchTurnBackend(this.orchestrator, sessionId, events);
+      return new BatchTurnBackend(this.orchestrator, handle, events);
     }
 
     const stream = this.streamClientFactory();
     const backend = new StreamingTurnBackend(stream, events);
-    const outcome = await stream.connect(sessionId, this.config.connectTimeoutMs, {
+    const outcome = await stream.connect(handle, this.config.connectTimeoutMs, {
       onPartialTranscript: (text) => backend.handlePartialTranscript(text),
       onFinalTranscript: (text) => backend.handleFinalTranscript(text),
       onReplyText: (text) => backend.handleReplyText(text),
@@ -141,7 +141,7 @@ export class DefaultTurnBackendFactory implements TurnBackendFactory {
 
     if (outcome === 'unavailable') {
       stream.close();
-      return new BatchTurnBackend(this.orchestrator, sessionId, events);
+      return new BatchTurnBackend(this.orchestrator, handle, events);
     }
     return backend;
   }

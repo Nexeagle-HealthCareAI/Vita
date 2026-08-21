@@ -3,7 +3,7 @@ import { PROTOCOL_VERSION } from '@vita/protocol';
 import { AudioPreprocessClient } from '../src/audioPreprocessClient.js';
 import { OrchestratorClient, type TurnAudioResponse } from '../src/orchestratorClient.js';
 import { ConnectionRelay, type RelayConfig } from '../src/relay.js';
-import { BatchTurnBackend, type TurnBackend, type TurnBackendEvents, type TurnBackendFactory } from '../src/turnBackend.js';
+import { BatchTurnBackend, type SessionHandle, type TurnBackend, type TurnBackendEvents, type TurnBackendFactory } from '../src/turnBackend.js';
 import type { SessionClaims } from '../src/ticket.js';
 
 const CLAIMS: SessionClaims = { sub: 'user-1' };
@@ -17,7 +17,7 @@ function fakeAudioPreprocess() {
 
 function fakeOrchestrator(turnResult?: TurnAudioResponse) {
   const client = Object.create(OrchestratorClient.prototype) as OrchestratorClient;
-  client.createSession = vi.fn().mockResolvedValue({ sessionId: 'sess-1', resumeToken: 'resume-tok-1' });
+  client.createSession = vi.fn().mockResolvedValue({ sessionId: 'sess-1', resumeToken: 'resume-tok-1', epoch: 1 });
   client.resumeSession = vi.fn().mockResolvedValue(null);
   client.postAudioTurn = vi.fn().mockResolvedValue(
     turnResult ?? { ok: true, data: { transcript: '', replyText: null, audioBase64: null, toolCallsExecuted: [], formFields: null } },
@@ -36,8 +36,8 @@ const SESSION_READY = { event: 'SESSION_READY', sessionId: 'sess-1', resumeToken
  * not just on the orchestrator calls one layer down. */
 function fakeBackendFactory(orchestrator: OrchestratorClient) {
   const backends: TurnBackend[] = [];
-  const create = vi.fn((sessionId: string, events: TurnBackendEvents): Promise<TurnBackend> => {
-    const backend = new BatchTurnBackend(orchestrator, sessionId, events);
+  const create = vi.fn((handle: SessionHandle, events: TurnBackendEvents): Promise<TurnBackend> => {
+    const backend = new BatchTurnBackend(orchestrator, handle, events);
     vi.spyOn(backend, 'beginUtterance');
     vi.spyOn(backend, 'endUtterance');
     vi.spyOn(backend, 'close');
@@ -122,8 +122,9 @@ describe('ConnectionRelay', () => {
     }
 
     expect(orchestrator.postAudioTurn).toHaveBeenCalledTimes(1);
-    const [sessionId, audio] = (orchestrator.postAudioTurn as ReturnType<typeof vi.fn>).mock.calls[0];
+    const [sessionId, epoch, audio] = (orchestrator.postAudioTurn as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(sessionId).toBe('sess-1');
+    expect(typeof epoch).toBe('number'); // declares which session generation this connection belongs to
     expect(Array.from(audio as Uint8Array)).toEqual([10, 11, 20, 21, 30, 31]);
 
     const events = jsonSends(sent);

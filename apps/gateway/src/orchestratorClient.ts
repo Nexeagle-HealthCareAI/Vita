@@ -29,6 +29,11 @@ export type TurnAudioResponse = { ok: true; data: TurnAudioResult } | { ok: fals
 export interface OrchestratorSessionResult {
   sessionId: string;
   resumeToken: string;
+  /** Which session generation this connection belongs to (see the orchestrator's
+   * DialogueSession.epoch). Declared back on every turn so a connection superseded by a
+   * later resume can be told to stop, instead of silently competing with the newer one.
+   * Defaults to 0 for an orchestrator build predating this field. */
+  epoch: number;
 }
 
 // Same constructor-injected-fetch pattern as HmsClient/GroqClient/SarvamClient in
@@ -61,7 +66,7 @@ export class OrchestratorClient {
       // The orchestrator's POST /session response is the full session object, which
       // already includes resumeToken -- just stop dropping it on the floor.
       const body = (await res.json()) as OrchestratorSessionResult;
-      return { sessionId: body.sessionId, resumeToken: body.resumeToken };
+      return { sessionId: body.sessionId, resumeToken: body.resumeToken, epoch: body.epoch ?? 0 };
     } catch {
       return null;
     }
@@ -81,16 +86,19 @@ export class OrchestratorClient {
       });
       if (!res.ok) return null;
       const body = (await res.json()) as OrchestratorSessionResult;
-      return { sessionId: body.sessionId, resumeToken: body.resumeToken };
+      return { sessionId: body.sessionId, resumeToken: body.resumeToken, epoch: body.epoch ?? 0 };
     } catch {
       return null;
     }
   }
 
-  async postAudioTurn(sessionId: string, audio: Uint8Array): Promise<TurnAudioResponse> {
+  /** `epoch` declares which session generation this connection belongs to (see
+   * OrchestratorSessionResult.epoch). Sent as a header rather than in the body because
+   * the body is raw octet-stream PCM. */
+  async postAudioTurn(sessionId: string, epoch: number, audio: Uint8Array): Promise<TurnAudioResponse> {
     const res = await this.fetchImpl(`${this.baseUrl}/session/${sessionId}/turn/audio`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/octet-stream' },
+      headers: { 'Content-Type': 'application/octet-stream', 'x-vita-session-epoch': String(epoch) },
       // See audioPreprocessClient.ts's identical cast for why.
       body: audio as unknown as BodyInit,
       signal: AbortSignal.timeout(this.timeoutMs),

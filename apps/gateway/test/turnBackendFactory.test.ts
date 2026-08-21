@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DefaultTurnBackendFactory } from '../src/streamingTurnBackend.js';
-import { BatchTurnBackend, type TurnBackendEvents } from '../src/turnBackend.js';
+import { BatchTurnBackend, type SessionHandle, type TurnBackendEvents } from '../src/turnBackend.js';
+
+const HANDLE: SessionHandle = { sessionId: 'sess-1', epoch: 1 };
 import { OrchestratorClient } from '../src/orchestratorClient.js';
 import type { OrchestratorStreamClient, StreamConnectOutcome } from '../src/orchestratorStreamClient.js';
 
@@ -37,7 +39,7 @@ describe('DefaultTurnBackendFactory', () => {
       connectTimeoutMs: 1000,
     });
 
-    const backend = await factory.create('sess-1', fakeEvents());
+    const backend = await factory.create(HANDLE, fakeEvents());
 
     expect(backend).toBeInstanceOf(BatchTurnBackend);
     expect(streamClientFactory).not.toHaveBeenCalled();
@@ -50,10 +52,10 @@ describe('DefaultTurnBackendFactory', () => {
       connectTimeoutMs: 1000,
     });
 
-    const backend = await factory.create('sess-1', fakeEvents());
+    const backend = await factory.create(HANDLE, fakeEvents());
 
     expect(backend).not.toBeInstanceOf(BatchTurnBackend);
-    expect(stream.connect).toHaveBeenCalledWith('sess-1', 1000, expect.any(Object));
+    expect(stream.connect).toHaveBeenCalledWith(HANDLE, 1000, expect.any(Object));
     expect(stream.close).not.toHaveBeenCalled();
   });
 
@@ -64,7 +66,7 @@ describe('DefaultTurnBackendFactory', () => {
       connectTimeoutMs: 1000,
     });
 
-    const backend = await factory.create('sess-1', fakeEvents());
+    const backend = await factory.create(HANDLE, fakeEvents());
 
     expect(backend).toBeInstanceOf(BatchTurnBackend);
     expect(stream.close).toHaveBeenCalledTimes(1);
@@ -81,7 +83,7 @@ describe('DefaultTurnBackendFactory', () => {
       connectTimeoutMs: 1000,
     });
 
-    await factory.create('sess-1', fakeEvents());
+    await factory.create(HANDLE, fakeEvents());
     expect(streamClientFactory).toHaveBeenCalledTimes(1);
   });
 });
