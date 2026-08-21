@@ -235,7 +235,11 @@ export class TeraWebSDK {
 
   private scheduleReconnect(): void {
     if (this.userInitiatedStop || this.torn_down) return;
-    const delay = Math.min(2 ** this.reconnectAttempt * 500, MAX_RECONNECT_DELAY_MS);
+    const base = Math.min(2 ** this.reconnectAttempt * 500, MAX_RECONNECT_DELAY_MS);
+    // Equal jitter (half fixed, half random) -- deterministic backoff meant every
+    // session across every hospital reconnecting after one gateway restart would retry
+    // in exact lockstep instead of spreading the resulting connection burst out.
+    const delay = base / 2 + Math.random() * (base / 2);
     this.reconnectAttempt++;
     setTimeout(() => {
       if (this.userInitiatedStop || this.torn_down) return;
@@ -391,3 +395,7 @@ export { TeraWebSDK as VitaWebSDK };
 export type { TeraConfig as VitaConfig, TeraState as VitaState };
 
 export { JitterBufferPlayer } from './playback.js';
+// Re-exported so a host app can compute its own RMS level on a different audio source
+// (e.g. a custom meter not tied to onAudioLevel's per-outgoing-frame cadence) without
+// reimplementing it -- previously only usable internally by this file.
+export { computeRmsLevel } from './audioLevel.js';

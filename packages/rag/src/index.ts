@@ -1,6 +1,13 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
 import { BM25, type BM25Doc } from './bm25.js';
 
+// Exported at the package boundary (not just used internally by HybridRetriever) so a
+// consumer can build a sparse-only fallback of their own -- e.g. exactly the degraded
+// path HybridRetriever.search() itself now falls back to internally when Qdrant/the
+// embedder is unavailable, which a consumer outside this package previously couldn't
+// replicate without reaching into internals bm25.ts's own doc comment already assumed
+// were reusable ("small and dependency-free so it's trivially unit-testable").
+export { BM25, type BM25Doc } from './bm25.js';
 export { LocalEmbedder, EMBEDDING_DIM } from './embedder.js';
 export { FAQ_DOCS, faqEmbedText, type FaqDoc } from './faqData.js';
 export { HOSPITAL_REFERENCE_DOCS, referenceEmbedText, type ReferenceDoc } from './hospitalReferenceData.js';

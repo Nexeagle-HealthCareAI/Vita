@@ -115,8 +115,13 @@ export function encodeBinaryFrame(type: BinaryFrameTypeValue, payload: Uint8Arra
 }
 
 export function decodeBinaryFrame(frame: Uint8Array): {
-  type: BinaryFrameTypeValue;
+  // undefined for a zero-length frame -- honest about noUncheckedIndexedAccess's own
+  // `frame[0]: number | undefined` rather than casting it away. Every real consumer
+  // already only ever checks `type === BinaryFrameType.SOME_VALUE`, which is false (and
+  // handled as "unrecognized frame", the existing behavior) for undefined exactly the
+  // same as for any other value that isn't a real BinaryFrameTypeValue.
+  type: BinaryFrameTypeValue | undefined;
   payload: Uint8Array;
 } {
-  return { type: frame[0] as BinaryFrameTypeValue, payload: frame.subarray(1) };
+  return { type: frame[0] as BinaryFrameTypeValue | undefined, payload: frame.subarray(1) };
 }

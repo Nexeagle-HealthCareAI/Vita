@@ -155,7 +155,18 @@ export function buildServer(
     done(null, payload);
   });
 
-  app.get('/healthz', async () => ({ status: 'ok' }));
+  // Checks the one dependency this process cannot function at all without -- previously
+  // an unconditional {status:'ok'}, which meant a broken/unreachable Redis (every
+  // session read/write fails) still reported healthy to deploy.yml's health-check gate
+  // and any future readiness probe.
+  app.get('/healthz', async (_req, reply) => {
+    try {
+      await redis.ping();
+    } catch (err) {
+      return reply.code(503).send({ status: 'degraded', redis: 'unreachable', error: err instanceof Error ? err.message : String(err) });
+    }
+    return { status: 'ok' };
+  });
 
   // Internal endpoint the gateway relays to once a ticket is redeemed. See POST
   // /session/:id/turn below for the actual STT -> LLM -> MCP -> TTS pipeline

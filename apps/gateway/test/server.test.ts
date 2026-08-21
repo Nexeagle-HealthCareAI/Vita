@@ -1,7 +1,14 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import jwt from 'jsonwebtoken';
 import { buildServer, extractTicketProtocol } from '../src/index.js';
 import { redeemTicket } from '../src/ticket.js';
+import { OrchestratorClient } from '../src/orchestratorClient.js';
+
+function fakeHealthyOrchestrator(healthy = true): OrchestratorClient {
+  const client = Object.create(OrchestratorClient.prototype) as OrchestratorClient;
+  client.healthz = vi.fn().mockResolvedValue(healthy);
+  return client;
+}
 
 // buildServer's JWT_SECRET is read once at module load from JWT_SIGNING_SECRET, defaulting
 // to 'change-me' -- same convention wsRelay.integration.test.ts relies on.
@@ -22,11 +29,17 @@ describe('gateway ticket protocol compatibility', () => {
 });
 
 describe('gateway HTTP surface', () => {
-  it('GET /healthz returns ok', async () => {
-    const app = buildServer();
+  it('GET /healthz returns ok when the orchestrator is reachable', async () => {
+    const app = buildServer({ orchestrator: fakeHealthyOrchestrator(true) });
     const res = await app.inject({ method: 'GET', url: '/healthz' });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: 'ok' });
+  });
+
+  it('GET /healthz returns 503 when the orchestrator is unreachable -- a real outage should not report healthy', async () => {
+    const app = buildServer({ orchestrator: fakeHealthyOrchestrator(false) });
+    const res = await app.inject({ method: 'GET', url: '/healthz' });
+    expect(res.statusCode).toBe(503);
   });
 
   it('POST /session/ticket without a bearer token is rejected', async () => {

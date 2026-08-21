@@ -104,4 +104,18 @@ export class OrchestratorClient {
       error: body?.error ?? { code: 'UPSTREAM_ERROR', message: `orchestrator returned ${res.status}`, recoverable: true },
     };
   }
+
+  /** Never throws -- a healthz check that itself needs a try/catch at every call site
+   * would defeat the point. Used by this gateway's own /healthz (see index.ts) so a
+   * dead/unreachable orchestrator makes THIS instance report unhealthy too, instead of
+   * the gateway's trivial always-200 endpoint hiding a real outage from deploy.yml's
+   * health-check gate. */
+  async healthz(): Promise<boolean> {
+    try {
+      const res = await this.fetchImpl(`${this.baseUrl}/healthz`, { signal: AbortSignal.timeout(this.timeoutMs) });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
 }

@@ -223,7 +223,17 @@ export function buildServer(deps?: {
     });
   });
 
-  app.get('/healthz', async () => ({ status: 'ok' }));
+  // Checks the orchestrator's own reachability/health transitively -- previously an
+  // unconditional {status:'ok'} regardless of whether this gateway could actually serve
+  // a real call, which meant deploy.yml's health-check gate (and any future readiness
+  // probe) could report healthy through a real orchestrator outage.
+  app.get('/healthz', async (_req, reply) => {
+    const orchestratorHealthy = await orchestrator.healthz();
+    if (!orchestratorHealthy) {
+      return reply.code(503).send({ status: 'degraded', orchestrator: 'unreachable' });
+    }
+    return { status: 'ok' };
+  });
 
   return app;
 }

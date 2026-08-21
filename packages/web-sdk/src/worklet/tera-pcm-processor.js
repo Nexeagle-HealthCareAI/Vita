@@ -24,7 +24,10 @@ class TeraPcmProcessor extends AudioWorkletProcessor {
       const pcm16 = new Int16Array(frame.length);
       for (let i = 0; i < frame.length; i++) {
         const s = Math.max(-1, Math.min(1, frame[i]));
-        pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        // Round to nearest rather than relying on Int16Array's implicit
+        // truncation-toward-zero -- sub-LSB precision, but free to fix while touching
+        // this line for other reasons.
+        pcm16[i] = Math.round(s < 0 ? s * 0x8000 : s * 0x7fff);
       }
       // Transfer the underlying buffer — zero-copy to the main thread.
       this.port.postMessage(pcm16.buffer, [pcm16.buffer]);
